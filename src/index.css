@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+  }
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+  }
+}
+
+@layer components {
+  .field-label {
+    @apply text-sm text-gray-500 mb-1 block;
+  }
+  .field-value {
+    @apply text-2xl font-bold;
+  }
+  .section-header {
+    @apply text-lg font-bold border-b-2 border-gray-200 pb-2 mb-4 mt-6;
+  }
+  .btn-primary {
+    @apply bg-primary text-white font-bold py-3.5 px-6 rounded-xl text-lg active:bg-primary-light transition-colors;
+  }
+  .input-field {
+    @apply w-full border-2 border-gray-300 rounded-xl px-4 py-3 text-xl font-semibold focus:border-primary focus:outline-none bg-white;
+  }
+}
+
+.save-flash {
+  animation: flashGreen 1.5s ease-out forwards;
+}
+@keyframes flashGreen {
+  0% { background-color: #bbf7d0; }
+  100% { background-color: transparent; }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-12px); }
+  40% { transform: translateX(10px); }
+  60% { transform: translateX(-6px); }
+  80% { transform: translateX(4px); }
+}
