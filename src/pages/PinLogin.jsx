@@ -64,7 +64,7 @@ export default function PinLogin({ onLogin }) {
     <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center px-6">
       {/* Header */}
       <div className="text-center mb-10">
-        <h1 className="text-2xl font-bold text-primary mb-1">GRIP Biochar</h1>
+        <h1 className="text-2xl font-bold text-primary mb-1">TimberLoop</h1>
         <p className="text-gray-500 text-sm">Enter your 4-digit PIN</p>
       </div>
 

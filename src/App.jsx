@@ -62,12 +62,9 @@ export default function App() {
       )}
 
       {/* Header */}
-      <header className="bg-primary text-white px-4 py-3 flex items-center justify-between sticky top-0 z-40">
-        <div>
-          <h1 className="text-lg font-bold leading-tight">GRIP Biochar</h1>
-          <p className="text-xs text-white/60">Gippsland Renewable Innovation Park</p>
-        </div>
-        <div className="flex items-center gap-3">
+      <header className="bg-primary text-white px-4 pt-[env(safe-area-inset-top,12px)] pb-3 flex flex-col items-center sticky top-0 z-40">
+        <h1 className="text-lg font-bold leading-tight text-center">TimberLoop Production Sheet</h1>
+        <div className="flex items-center gap-3 mt-1">
           {queueCount > 0 && (
             <span className="bg-orange-400 text-xs font-bold px-2 py-1 rounded-full">
               {queueCount} queued
