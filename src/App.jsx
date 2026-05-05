@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Analytics } from '@vercel/analytics/react'
 import TabBar from './components/TabBar'
 import Today from './pages/Today'
 import DailySheet from './pages/DailySheet'
@@ -95,6 +96,7 @@ export default function App() {
           <TabBar active={tab} onChange={setTab} />
         </div>
       )}
+      <Analytics />
     </PullToRefresh>
   )
 }
