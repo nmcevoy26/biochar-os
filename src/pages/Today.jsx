@@ -229,7 +229,7 @@ export default function Today() {
                   <div className="grid grid-cols-3 gap-4 text-sm">
                     <div>
                       <span className="text-gray-400">Sub-samples</span>
-                      <span className={`inline-block mt-1 text-sm font-bold px-2.5 py-0.5 rounded-lg ${
+                      <span className={`inline-block mt-1 text-sm font-bold px-3 py-0.5 rounded-lg ${
                         (subsampleCounts[sample.id] || 0) >= 5
                           ? 'bg-green-100 text-green-700'
                           : 'bg-orange-100 text-orange-700'
@@ -239,13 +239,21 @@ export default function Today() {
                     </div>
                     <div>
                       <span className="text-gray-400">Composite</span>
-                      <span className="block font-semibold">
+                      <span className={`inline-block mt-1 text-sm font-bold px-3 py-0.5 rounded-lg ${
+                        sample.composite_created
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-gray-100 text-gray-500'
+                      }`}>
                         {sample.composite_created ? 'Yes' : 'No'}
                       </span>
                     </div>
                     <div>
                       <span className="text-gray-400">Sent to lab</span>
-                      <span className="block font-semibold">
+                      <span className={`inline-block mt-1 text-sm font-bold px-3 py-0.5 rounded-lg ${
+                        sample.sent_to_lab
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-gray-100 text-gray-500'
+                      }`}>
                         {sample.sent_to_lab ? 'Yes' : 'No'}
                       </span>
                     </div>

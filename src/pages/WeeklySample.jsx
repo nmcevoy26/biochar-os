@@ -173,7 +173,7 @@ export default function WeeklySample({ online }) {
         <div className="space-y-3">
           <div className="flex items-center justify-between bg-white border-2 border-gray-200 rounded-xl px-4 py-3.5">
             <span className="text-lg font-semibold">Daily sub-samples collected</span>
-            <span className={`text-sm font-bold px-3 py-1 rounded-lg ${
+            <span className={`text-sm font-bold px-3 py-0.5 rounded-lg ${
               subsampleBags.length >= 5 ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'
             }`}>
               {subsampleBags.length}/5
@@ -198,13 +198,18 @@ export default function WeeklySample({ online }) {
                 return (
                   <div
                     key={bag.bulk_bag_id + i}
-                    className={`flex items-center justify-between px-4 py-2.5 ${
+                    className={`flex items-center gap-3 px-4 py-2.5 ${
                       i > 0 ? 'border-t border-gray-100' : ''
                     }`}
                   >
-                    <span className="font-semibold">{bag.bulk_bag_id}</span>
+                    <span className="w-5 h-5 rounded-full bg-green-500 flex items-center justify-center flex-shrink-0">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth={3} className="w-3 h-3">
+                        <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
+                      </svg>
+                    </span>
+                    <span className="font-semibold flex-1">{bag.bulk_bag_id}</span>
                     <span className="text-sm text-gray-500">{bag.fill_date}</span>
-                    <span className="text-sm font-semibold text-gray-700">
+                    <span className="text-sm font-semibold text-gray-700 ml-3">
                       {dryWeight !== '-' ? `${dryWeight} kg` : '-'}
                     </span>
                   </div>
