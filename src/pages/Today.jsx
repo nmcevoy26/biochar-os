@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react'
-import { supabase, todayISO } from '../lib/supabase'
+import { supabase, todayISO, MACHINE_NAMES } from '../lib/supabase'
 import SwipeCard from '../components/SwipeCard'
 
 export default function Today() {
   const [runs, setRuns] = useState([])
+  const [samples, setSamples] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     loadToday()
+    loadWeeklySamples()
 
     const channel = supabase
       .channel('today-changes')
@@ -20,6 +22,11 @@ export default function Today() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'bulk_bags' },
         () => loadToday()
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'weekly_samples' },
+        () => loadWeeklySamples()
       )
       .subscribe()
 
@@ -38,12 +45,27 @@ export default function Today() {
     setLoading(false)
   }
 
+  async function loadWeeklySamples() {
+    const today = todayISO()
+    const { data } = await supabase
+      .from('weekly_samples')
+      .select('*')
+      .lte('week_start_date', today)
+      .gte('week_end_date', today)
+
+    if (data) setSamples(data)
+  }
+
   async function deleteRun(runId) {
-    // Delete bags first (FK constraint), then production record
     await supabase.from('bulk_bags').delete().eq('production_id', runId)
     await supabase.from('daily_production_feedstock').delete().eq('production_id', runId)
     await supabase.from('daily_production').delete().eq('id', runId)
     loadToday()
+  }
+
+  async function deleteSample(sampleId) {
+    await supabase.from('weekly_samples').delete().eq('id', sampleId)
+    loadWeeklySamples()
   }
 
   if (loading) {
@@ -170,6 +192,55 @@ export default function Today() {
             </div>
           </div>
         </div>
+      )}
+
+      {samples.length > 0 && (
+        <>
+          <h2 className="text-xl font-bold mt-8 mb-4">Weekly Samples</h2>
+          <div className="space-y-4">
+            {samples.map((sample) => (
+              <SwipeCard key={sample.id} onDelete={() => deleteSample(sample.id)}>
+                <div className="bg-white border-2 border-gray-200 rounded-2xl p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-xl font-bold">
+                      {MACHINE_NAMES[sample.machine_id] || 'Unknown'}
+                    </span>
+                    <span className="text-sm font-mono text-gray-500">
+                      {sample.storage_label || '-'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-4 text-sm">
+                    <div>
+                      <span className="text-gray-400">Sub-samples</span>
+                      <span className="block font-semibold">
+                        {sample.daily_subsamples_collected ? 'Yes' : 'No'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400">Composite</span>
+                      <span className="block font-semibold">
+                        {sample.composite_created ? 'Yes' : 'No'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-400">Sent to lab</span>
+                      <span className="block font-semibold">
+                        {sample.sent_to_lab ? 'Yes' : 'No'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {sample.stored_date && (
+                    <p className="mt-3 text-sm text-gray-500">
+                      Stored: <span className="font-semibold text-gray-700">{sample.stored_date}</span>
+                    </p>
+                  )}
+                </div>
+              </SwipeCard>
+            ))}
+          </div>
+        </>
       )}
     </div>
   )

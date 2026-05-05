@@ -11,6 +11,10 @@ export const MACHINES = {
   CP1000: 'd804052e-e7d7-484a-8a4c-4f1da6048fdd',
 }
 
+export const MACHINE_NAMES = Object.fromEntries(
+  Object.entries(MACHINES).map(([name, id]) => [id, name])
+)
+
 export function detectShift() {
   const hour = new Date().getHours()
   if (hour >= 5 && hour < 13) return 'Morning'
