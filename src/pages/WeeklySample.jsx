@@ -33,8 +33,9 @@ export default function WeeklySample({ online }) {
   const [subsamplesCollected, setSubsamplesCollected] = useState(false)
   const [compositeCreated, setCompositeCreated] = useState(false)
   const [storageLabel, setStorageLabel] = useState('')
-  const [storedDate, setStoredDate] = useState('')
+  const [storedDate, setStoredDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [sentToLab, setSentToLab] = useState(false)
+  const [sentDate, setSentDate] = useState('')
   const [notes, setNotes] = useState('')
   const [existingId, setExistingId] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -57,21 +58,24 @@ export default function WeeklySample({ online }) {
       .eq('machine_id', machineId)
       .maybeSingle()
       .then(({ data }) => {
+        const today = new Date().toISOString().slice(0, 10)
         if (data) {
           setExistingId(data.id)
           setSubsamplesCollected(data.daily_subsamples_collected || false)
           setCompositeCreated(data.composite_created || false)
           setStorageLabel(data.storage_label || '')
-          setStoredDate(data.stored_date || '')
+          setStoredDate(data.stored_date || today)
           setSentToLab(data.sent_to_lab || false)
+          setSentDate(data.sent_date || today)
           setNotes(data.notes || '')
         } else {
           setExistingId(null)
           setSubsamplesCollected(false)
           setCompositeCreated(false)
           setStorageLabel('')
-          setStoredDate('')
+          setStoredDate(today)
           setSentToLab(false)
+          setSentDate(today)
           setNotes('')
         }
         setDirty(false)
@@ -94,6 +98,7 @@ export default function WeeklySample({ online }) {
         storage_label: storageLabel || null,
         stored_date: storedDate || null,
         sent_to_lab: sentToLab,
+        sent_date: sentToLab ? (sentDate || null) : null,
         notes: notes || null,
         updated_at: new Date().toISOString(),
       }
@@ -130,12 +135,12 @@ export default function WeeklySample({ online }) {
       <button
         type="button"
         onClick={onToggle}
-        className={`w-14 h-8 rounded-full transition-colors relative ${
+        className={`w-14 h-8 rounded-full transition-colors flex items-center ${
           value ? 'bg-green-500' : 'bg-gray-300'
         }`}
       >
         <span
-          className={`absolute top-1 w-6 h-6 rounded-full bg-white shadow transition-transform ${
+          className={`w-6 h-6 rounded-full bg-white shadow transition-transform ${
             value ? 'translate-x-7' : 'translate-x-1'
           }`}
         />
@@ -226,6 +231,18 @@ export default function WeeklySample({ online }) {
           value={sentToLab}
           onToggle={() => { setSentToLab(!sentToLab); markDirty() }}
         />
+
+        {sentToLab && (
+          <div>
+            <label className="field-label">Sent Date</label>
+            <input
+              type="date"
+              value={sentDate}
+              onChange={(e) => { setSentDate(e.target.value); markDirty() }}
+              className="input-field"
+            />
+          </div>
+        )}
 
         <div>
           <label className="field-label">Notes</label>
