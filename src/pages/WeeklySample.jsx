@@ -75,7 +75,7 @@ export default function WeeklySample({ online }) {
         week_end_date: weekEnd,
         daily_subsamples_collected: subsamplesCollected,
         composite_created: compositeCreated,
-        storage_label: storageLabel || null,
+        storage_label: storageLabel || compositeId,
         stored_date: storedDate || null,
         sent_to_lab: sentToLab,
         sent_date: sentToLab ? (sentDate || null) : null,
