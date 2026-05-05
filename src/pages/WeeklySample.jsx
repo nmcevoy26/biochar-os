@@ -1,29 +1,9 @@
 import { useState, useEffect } from 'react'
-import { supabase, MACHINES } from '../lib/supabase'
+import { supabase, MACHINES, todayISO } from '../lib/supabase'
+import { getMondayOfWeek, addDays, getISOWeek } from '../lib/dates'
 import ToggleGroup from '../components/ToggleGroup'
+import Toggle from '../components/Toggle'
 import SaveConfirmation from '../components/SaveConfirmation'
-
-function getMondayOfWeek(date = new Date()) {
-  const d = new Date(date)
-  const day = d.getDay()
-  const diff = day === 0 ? -6 : 1 - day
-  d.setDate(d.getDate() + diff)
-  return d.toISOString().slice(0, 10)
-}
-
-function addDays(dateStr, days) {
-  const d = new Date(dateStr)
-  d.setDate(d.getDate() + days)
-  return d.toISOString().slice(0, 10)
-}
-
-function getISOWeek(dateStr) {
-  const d = new Date(dateStr)
-  d.setHours(0, 0, 0, 0)
-  d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7))
-  const week1 = new Date(d.getFullYear(), 0, 4)
-  return 1 + Math.round(((d - week1) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7)
-}
 
 export default function WeeklySample({ online }) {
   const [machineKey, setMachineKey] = useState(
@@ -33,7 +13,7 @@ export default function WeeklySample({ online }) {
   const [subsamplesCollected, setSubsamplesCollected] = useState(false)
   const [compositeCreated, setCompositeCreated] = useState(false)
   const [storageLabel, setStorageLabel] = useState('')
-  const [storedDate, setStoredDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [storedDate, setStoredDate] = useState(todayISO)
   const [sentToLab, setSentToLab] = useState(false)
   const [sentDate, setSentDate] = useState('')
   const [notes, setNotes] = useState('')
@@ -58,7 +38,7 @@ export default function WeeklySample({ online }) {
       .eq('machine_id', machineId)
       .maybeSingle()
       .then(({ data }) => {
-        const today = new Date().toISOString().slice(0, 10)
+        const today = todayISO()
         if (data) {
           setExistingId(data.id)
           setSubsamplesCollected(data.daily_subsamples_collected || false)
@@ -128,25 +108,6 @@ export default function WeeklySample({ online }) {
       setSaving(false)
     }
   }
-
-  const Toggle = ({ label, value, onToggle }) => (
-    <div className="flex items-center justify-between bg-white border-2 border-gray-200 rounded-xl px-4 py-3.5">
-      <span className="text-lg font-semibold">{label}</span>
-      <button
-        type="button"
-        onClick={onToggle}
-        className={`w-14 h-8 rounded-full transition-colors flex items-center ${
-          value ? 'bg-green-500' : 'bg-gray-300'
-        }`}
-      >
-        <span
-          className={`w-6 h-6 rounded-full bg-white shadow transition-transform ${
-            value ? 'translate-x-7' : 'translate-x-1'
-          }`}
-        />
-      </button>
-    </div>
-  )
 
   return (
     <div className="pb-28 px-4 pt-4 max-w-2xl mx-auto">
