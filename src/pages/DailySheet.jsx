@@ -162,9 +162,31 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
   }
 
   function removeBag(index) {
-    if (bags[index]._saved && !confirm('Remove this saved bag?')) return
+    const bag = bags[index]
+    if (bag._saved && !confirm('Remove this saved bag?')) return
+
+    // Optimistic: remove from UI immediately
     setBags((prev) => prev.filter((_, i) => i !== index))
     markDirty()
+
+    // Delete from Supabase in background if already persisted
+    if (bag._saved && bag.id) {
+      supabase
+        .from('bulk_bags')
+        .delete()
+        .eq('id', bag.id)
+        .then(({ error }) => {
+          if (error) {
+            // Rollback: re-insert bag at original position
+            setBags((prev) => {
+              const restored = [...prev]
+              restored.splice(index, 0, bag)
+              return restored
+            })
+            alert('Failed to delete bag: ' + error.message)
+          }
+        })
+    }
   }
 
   async function handleSave() {
