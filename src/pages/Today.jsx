@@ -5,6 +5,7 @@ import SwipeCard from '../components/SwipeCard'
 export default function Today() {
   const [runs, setRuns] = useState([])
   const [samples, setSamples] = useState([])
+  const [subsampleCounts, setSubsampleCounts] = useState({})
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -53,7 +54,22 @@ export default function Today() {
       .lte('week_start_date', today)
       .gte('week_end_date', today)
 
-    if (data) setSamples(data)
+    if (data) {
+      setSamples(data)
+      // Load subsample counts for each sample's week/machine
+      const counts = {}
+      for (const sample of data) {
+        const { count } = await supabase
+          .from('bulk_bags')
+          .select('*', { count: 'exact', head: true })
+          .eq('machine_id', sample.machine_id)
+          .eq('subsample_taken', true)
+          .gte('fill_date', sample.week_start_date)
+          .lte('fill_date', sample.week_end_date)
+        counts[sample.id] = count || 0
+      }
+      setSubsampleCounts(counts)
+    }
   }
 
   async function deleteRun(runId) {
@@ -213,8 +229,12 @@ export default function Today() {
                   <div className="grid grid-cols-3 gap-4 text-sm">
                     <div>
                       <span className="text-gray-400">Sub-samples</span>
-                      <span className="block font-semibold">
-                        {sample.daily_subsamples_collected ? 'Yes' : 'No'}
+                      <span className={`inline-block mt-1 text-sm font-bold px-2.5 py-0.5 rounded-lg ${
+                        (subsampleCounts[sample.id] || 0) >= 5
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-orange-100 text-orange-700'
+                      }`}>
+                        {subsampleCounts[sample.id] || 0}/5
                       </span>
                     </div>
                     <div>

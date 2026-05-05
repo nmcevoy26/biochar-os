@@ -174,9 +174,9 @@ export default function WeeklySample({ online }) {
           <div className="flex items-center justify-between bg-white border-2 border-gray-200 rounded-xl px-4 py-3.5">
             <span className="text-lg font-semibold">Daily sub-samples collected</span>
             <span className={`text-sm font-bold px-3 py-1 rounded-lg ${
-              subsamplesCollected ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+              subsampleBags.length >= 5 ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'
             }`}>
-              {subsamplesCollected ? `Yes (${subsampleBags.length})` : 'No'}
+              {subsampleBags.length}/5
             </span>
           </div>
           <Toggle
