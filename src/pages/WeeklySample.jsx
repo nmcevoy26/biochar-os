@@ -10,8 +10,8 @@ export default function WeeklySample({ online }) {
     () => localStorage.getItem('grip_last_machine') || 'CP500'
   )
   const [weekStart, setWeekStart] = useState(() => getMondayOfWeek())
-  const [subsamplesCollected, setSubsamplesCollected] = useState(false)
   const [compositeCreated, setCompositeCreated] = useState(false)
+  const [subsampleBags, setSubsampleBags] = useState([])
   const [storageLabel, setStorageLabel] = useState('')
   const [storedDate, setStoredDate] = useState(todayISO)
   const [sentToLab, setSentToLab] = useState(false)
@@ -28,6 +28,8 @@ export default function WeeklySample({ online }) {
   const week = getISOWeek(weekStart)
   const compositeId = `WS-${machineKey}-${year}-W${String(week).padStart(2, '0')}`
 
+  const subsamplesCollected = subsampleBags.length > 0
+
   // Load existing record
   useEffect(() => {
     if (!weekStart || !machineId) return
@@ -41,7 +43,6 @@ export default function WeeklySample({ online }) {
         const today = todayISO()
         if (data) {
           setExistingId(data.id)
-          setSubsamplesCollected(data.daily_subsamples_collected || false)
           setCompositeCreated(data.composite_created || false)
           setStorageLabel(data.storage_label || '')
           setStoredDate(data.stored_date || today)
@@ -50,7 +51,6 @@ export default function WeeklySample({ online }) {
           setNotes(data.notes || '')
         } else {
           setExistingId(null)
-          setSubsamplesCollected(false)
           setCompositeCreated(false)
           setStorageLabel('')
           setStoredDate(today)
@@ -61,6 +61,23 @@ export default function WeeklySample({ online }) {
         setDirty(false)
       })
   }, [weekStart, machineId])
+
+  // Load bags with sub-samples taken during this week
+  useEffect(() => {
+    if (!weekStart || !machineId) return
+    supabase
+      .from('bulk_bags')
+      .select('bulk_bag_id, fill_date, wet_weight_kg, moisture_pct')
+      .eq('machine_id', machineId)
+      .eq('subsample_taken', true)
+      .gte('fill_date', weekStart)
+      .lte('fill_date', weekEnd)
+      .order('fill_date')
+      .then(({ data }) => {
+        if (data) setSubsampleBags(data)
+        else setSubsampleBags([])
+      })
+  }, [weekStart, weekEnd, machineId])
 
   function markDirty() {
     setDirty(true)
@@ -154,17 +171,48 @@ export default function WeeklySample({ online }) {
         </div>
 
         <div className="space-y-3">
-          <Toggle
-            label="Daily sub-samples collected"
-            value={subsamplesCollected}
-            onToggle={() => { setSubsamplesCollected(!subsamplesCollected); markDirty() }}
-          />
+          <div className="flex items-center justify-between bg-white border-2 border-gray-200 rounded-xl px-4 py-3.5">
+            <span className="text-lg font-semibold">Daily sub-samples collected</span>
+            <span className={`text-sm font-bold px-3 py-1 rounded-lg ${
+              subsamplesCollected ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
+            }`}>
+              {subsamplesCollected ? `Yes (${subsampleBags.length})` : 'No'}
+            </span>
+          </div>
           <Toggle
             label="Composite sample created"
             value={compositeCreated}
             onToggle={() => { setCompositeCreated(!compositeCreated); markDirty() }}
           />
         </div>
+
+        {subsampleBags.length > 0 && (
+          <div>
+            <label className="field-label">Sub-samples this week</label>
+            <div className="border-2 border-gray-200 rounded-xl overflow-hidden">
+              {subsampleBags.map((bag, i) => {
+                const dryWeight =
+                  bag.wet_weight_kg != null && bag.moisture_pct != null
+                    ? (Number(bag.wet_weight_kg) * (1 - Number(bag.moisture_pct) / 100)).toFixed(1)
+                    : '-'
+                return (
+                  <div
+                    key={bag.bulk_bag_id + i}
+                    className={`flex items-center justify-between px-4 py-2.5 ${
+                      i > 0 ? 'border-t border-gray-100' : ''
+                    }`}
+                  >
+                    <span className="font-semibold">{bag.bulk_bag_id}</span>
+                    <span className="text-sm text-gray-500">{bag.fill_date}</span>
+                    <span className="text-sm font-semibold text-gray-700">
+                      {dryWeight !== '-' ? `${dryWeight} kg` : '-'}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
 
         <div>
           <label className="field-label">Storage Label</label>

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase, MACHINES, detectShift, todayISO } from '../lib/supabase'
 import { enqueue } from '../lib/offline'
 import ToggleGroup from '../components/ToggleGroup'
+import Toggle from '../components/Toggle'
 import NumberInput from '../components/NumberInput'
 import SaveConfirmation from '../components/SaveConfirmation'
 
@@ -10,6 +11,7 @@ const EMPTY_BAG = {
   wet_weight_kg: '',
   moisture_pct: '',
   volume_m3: 1,
+  subsample_taken: false,
 }
 
 export default function DailySheet({ online, operator: loggedInOperator }) {
@@ -232,6 +234,7 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
                 wet_weight_kg: bag.wet_weight_kg === '' ? null : Number(bag.wet_weight_kg),
                 moisture_pct: bag.moisture_pct === '' ? null : Number(bag.moisture_pct),
                 volume_m3: bag.volume_m3 === '' ? null : Number(bag.volume_m3),
+                subsample_taken: bag.subsample_taken || false,
               },
             })
           }
@@ -283,6 +286,7 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
           wet_weight_kg: bag.wet_weight_kg === '' ? null : Number(bag.wet_weight_kg),
           moisture_pct: bag.moisture_pct === '' ? null : Number(bag.moisture_pct),
           volume_m3: bag.volume_m3 === '' ? null : Number(bag.volume_m3),
+          subsample_taken: bag.subsample_taken || false,
           updated_at: new Date().toISOString(),
         }
         if (bag.id) {
@@ -587,6 +591,12 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
                   Density: <span className="font-semibold text-gray-700">{density} kg/m3</span>
                 </div>
               )}
+
+              <Toggle
+                label="Sub-sample taken"
+                value={bag.subsample_taken || false}
+                onToggle={() => { updateBag(i, 'subsample_taken', !bag.subsample_taken) }}
+              />
             </div>
           )
         })}
