@@ -183,6 +183,8 @@ export default function WeeklySample({ online }) {
             label="Composite sample created"
             value={compositeCreated}
             onToggle={() => { setCompositeCreated(!compositeCreated); markDirty() }}
+            disabled={subsampleBags.length < 5}
+            hint={subsampleBags.length < 5 ? 'Requires 5 sub-samples' : undefined}
           />
         </div>
 
@@ -244,6 +246,8 @@ export default function WeeklySample({ online }) {
           label="Sent to lab"
           value={sentToLab}
           onToggle={() => { setSentToLab(!sentToLab); markDirty() }}
+          disabled={!compositeCreated}
+          hint={!compositeCreated ? 'Create composite first' : undefined}
         />
 
         {sentToLab && (
