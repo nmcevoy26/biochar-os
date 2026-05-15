@@ -5,6 +5,16 @@ import ToggleGroup from '../components/ToggleGroup'
 import Toggle from '../components/Toggle'
 import NumberInput from '../components/NumberInput'
 import SaveConfirmation from '../components/SaveConfirmation'
+import WoodVinegarSection from '../components/WoodVinegarSection'
+
+const NEW_WV_BATCH = '__new__'
+
+function nextBatchId(latestBatchId) {
+  if (!latestBatchId) return 'WV001'
+  const num = parseInt(String(latestBatchId).replace(/\D/g, ''), 10)
+  if (isNaN(num)) return 'WV001'
+  return 'WV' + String(num + 1).padStart(3, '0')
+}
 
 const EMPTY_BAG = {
   bulk_bag_id: '',
@@ -42,7 +52,30 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
   const [flashIdx, setFlashIdx] = useState(null)
   const [readingsOpen, setReadingsOpen] = useState(false)
 
+  // Wood vinegar (CP500 only)
+  const [wvCollected, setWvCollected] = useState(false)
+  const [wvOpenBatches, setWvOpenBatches] = useState([])
+  const [wvBatchChoice, setWvBatchChoice] = useState('')
+  const [wvNewLocation, setWvNewLocation] = useState('')
+  const [wvVolume, setWvVolume] = useState('')
+  const [wvNotes, setWvNotes] = useState('')
+  const [wvCloseBatch, setWvCloseBatch] = useState(false)
+  const [wvExistingFillId, setWvExistingFillId] = useState(null)
+  const [wvErrors, setWvErrors] = useState({})
+
   const machineId = MACHINES[machineKey]
+  const isCP500 = machineKey === 'CP500'
+
+  function resetWoodVinegar() {
+    setWvCollected(false)
+    setWvBatchChoice('')
+    setWvNewLocation('')
+    setWvVolume('')
+    setWvNotes('')
+    setWvCloseBatch(false)
+    setWvExistingFillId(null)
+    setWvErrors({})
+  }
 
   // Load feedstock sources
   useEffect(() => {
@@ -69,6 +102,24 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
         }
       })
   }, [])
+
+  // Load open wood vinegar batches (CP500 only)
+  useEffect(() => {
+    if (!isCP500) return
+    supabase
+      .from('v_wood_vinegar_batches')
+      .select('*')
+      .eq('status', 'open')
+      .order('batch_id')
+      .then(({ data }) => {
+        if (data) setWvOpenBatches(data)
+      })
+  }, [isCP500])
+
+  // Clear wood vinegar UI when switching to CP1000
+  useEffect(() => {
+    if (!isCP500) resetWoodVinegar()
+  }, [isCP500])
 
   // Load existing production record for this date/shift/machine
   useEffect(() => {
@@ -111,6 +162,29 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
             .then(({ data: bagData }) => {
               if (bagData) setBags(bagData.map((b) => ({ ...b, _saved: true })))
             })
+          // Load existing wood vinegar fill (CP500 only, single-fill UX)
+          if (machineKey === 'CP500') {
+            supabase
+              .from('wood_vinegar_fills')
+              .select('id, batch_id, volume_liters, notes')
+              .eq('production_id', data.id)
+              .order('created_at', { ascending: true })
+              .limit(1)
+              .then(({ data: fillData }) => {
+                if (fillData?.[0]) {
+                  const f = fillData[0]
+                  setWvCollected(true)
+                  setWvBatchChoice(f.batch_id)
+                  setWvVolume(f.volume_liters ?? '')
+                  setWvNotes(f.notes || '')
+                  setWvExistingFillId(f.id)
+                } else {
+                  resetWoodVinegar()
+                }
+              })
+          } else {
+            resetWoodVinegar()
+          }
         } else {
           setExistingId(null)
           setOperatorName(loggedInOperator?.name || '')
@@ -126,6 +200,7 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
           setNotes('')
           setSelectedFeedstock('')
           setBags([])
+          resetWoodVinegar()
         }
         setDirty(false)
       })
@@ -191,7 +266,19 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
     }
   }
 
+  function validateWoodVinegar() {
+    if (!isCP500 || !wvCollected) return {}
+    const errs = {}
+    if (wvBatchChoice === '') errs.batch = 'Select a batch or start a new one.'
+    if (wvVolume === '' || Number(wvVolume) <= 0) errs.volume = 'Volume must be greater than 0.'
+    return errs
+  }
+
   async function handleSave() {
+    const wvErrs = validateWoodVinegar()
+    setWvErrors(wvErrs)
+    if (Object.keys(wvErrs).length > 0) return
+
     setSaving(true)
     try {
       const productionData = {
@@ -236,6 +323,44 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
                 volume_m3: bag.volume_m3 === '' ? null : Number(bag.volume_m3),
                 subsample_taken: bag.subsample_taken || false,
               },
+            })
+          }
+        }
+        // Wood vinegar offline: only existing batch (new-batch UX is gated to online)
+        if (isCP500 && wvCollected && wvBatchChoice && wvBatchChoice !== NEW_WV_BATCH && existingId) {
+          if (wvExistingFillId) {
+            enqueue({
+              table: 'wood_vinegar_fills',
+              type: 'update',
+              data: {
+                batch_id: wvBatchChoice,
+                volume_liters: Number(wvVolume),
+                notes: wvNotes || null,
+                updated_at: new Date().toISOString(),
+              },
+              match: { id: wvExistingFillId },
+            })
+          } else {
+            enqueue({
+              table: 'wood_vinegar_fills',
+              type: 'insert',
+              data: {
+                id: crypto.randomUUID(),
+                batch_id: wvBatchChoice,
+                production_id: existingId,
+                operator_id: loggedInOperator?.id || null,
+                fill_date: date,
+                volume_liters: Number(wvVolume),
+                notes: wvNotes || null,
+              },
+            })
+          }
+          if (wvCloseBatch) {
+            enqueue({
+              table: 'wood_vinegar_batches',
+              type: 'update',
+              data: { status: 'in_stock', closed_date: todayISO(), updated_at: new Date().toISOString() },
+              match: { id: wvBatchChoice },
             })
           }
         }
@@ -297,6 +422,87 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
         }
         bag._saved = true
         setFlashIdx(i)
+      }
+
+      // Wood vinegar save (CP500 + collected toggled on)
+      if (isCP500 && wvCollected) {
+        let batchUuid = wvBatchChoice
+
+        if (wvBatchChoice === NEW_WV_BATCH) {
+          // Generate next WV### with one retry on unique-violation
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const { data: latestBatch } = await supabase
+              .from('wood_vinegar_batches')
+              .select('batch_id')
+              .order('batch_id', { ascending: false })
+              .limit(1)
+            const candidate = nextBatchId(latestBatch?.[0]?.batch_id)
+            const { data: inserted, error: insertErr } = await supabase
+              .from('wood_vinegar_batches')
+              .insert({
+                batch_id: candidate,
+                location: wvNewLocation || null,
+                status: 'open',
+              })
+              .select('id')
+              .single()
+            if (!insertErr) {
+              batchUuid = inserted.id
+              break
+            }
+            if (insertErr.code !== '23505' || attempt === 1) throw insertErr
+          }
+        }
+
+        const fillPayload = {
+          batch_id: batchUuid,
+          production_id: productionId,
+          operator_id: loggedInOperator?.id || null,
+          fill_date: date,
+          volume_liters: Number(wvVolume),
+          notes: wvNotes || null,
+          updated_at: new Date().toISOString(),
+        }
+
+        if (wvExistingFillId) {
+          const { error } = await supabase
+            .from('wood_vinegar_fills')
+            .update(fillPayload)
+            .eq('id', wvExistingFillId)
+          if (error) throw error
+        } else {
+          const { data: fillRow, error } = await supabase
+            .from('wood_vinegar_fills')
+            .insert(fillPayload)
+            .select('id')
+            .single()
+          if (error) throw error
+          setWvExistingFillId(fillRow.id)
+        }
+
+        // Reflect any locally-known batch_id swap (new-batch -> uuid)
+        if (wvBatchChoice === NEW_WV_BATCH) setWvBatchChoice(batchUuid)
+
+        if (wvCloseBatch && wvBatchChoice !== NEW_WV_BATCH) {
+          const { error } = await supabase
+            .from('wood_vinegar_batches')
+            .update({
+              status: 'in_stock',
+              closed_date: todayISO(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', batchUuid)
+          if (error) throw error
+          setWvCloseBatch(false)
+        }
+
+        // Refresh open batches dropdown
+        const { data: refreshed } = await supabase
+          .from('v_wood_vinegar_batches')
+          .select('*')
+          .eq('status', 'open')
+          .order('batch_id')
+        if (refreshed) setWvOpenBatches(refreshed)
       }
 
       // Refresh next bag number
@@ -609,6 +815,41 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
           + Add Bag
         </button>
       </div>
+
+      {/* Wood Vinegar (CP500 only) */}
+      {isCP500 && (
+        <WoodVinegarSection
+          online={online}
+          collected={wvCollected}
+          onCollectedChange={(v) => {
+            setWvCollected(v)
+            if (!v) setWvErrors({})
+            markDirty()
+          }}
+          openBatches={wvOpenBatches}
+          batchChoice={wvBatchChoice}
+          onBatchChoiceChange={(v) => {
+            setWvBatchChoice(v)
+            if (v !== NEW_WV_BATCH) setWvNewLocation('')
+            if (v === NEW_WV_BATCH || v === '') setWvCloseBatch(false)
+            setWvErrors((e) => ({ ...e, batch: undefined }))
+            markDirty()
+          }}
+          newLocation={wvNewLocation}
+          onNewLocationChange={(v) => { setWvNewLocation(v); markDirty() }}
+          volume={wvVolume}
+          onVolumeChange={(v) => {
+            setWvVolume(v)
+            setWvErrors((e) => ({ ...e, volume: undefined }))
+            markDirty()
+          }}
+          notes={wvNotes}
+          onNotesChange={(v) => { setWvNotes(v); markDirty() }}
+          closeBatch={wvCloseBatch}
+          onCloseBatchChange={(v) => { setWvCloseBatch(v); markDirty() }}
+          errors={wvErrors}
+        />
+      )}
 
       {/* Save */}
       <button
