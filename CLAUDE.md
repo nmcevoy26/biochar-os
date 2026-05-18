@@ -62,8 +62,10 @@ src/
 - Write a clear, concise commit message describing what changed
 
 ## Git Workflow
-- Use `staging` branch for new features: `git checkout -b staging`
-- Only merge to `main` after confirming changes work on the Vercel preview URL
+- Feature branches off `main` using `feat/...`, `fix/...`, or `chore/...` naming
+- Open a PR to `main` for review and merge
+- Confirm changes work on the Vercel preview URL before merging
+- The `staging` branch exists as a long-lived integration marker (currently in sync with `main`) but isn't used as an active integration branch for new work
 - Push directly to `main` only for urgent hotfixes
 
 ## Supabase Context
