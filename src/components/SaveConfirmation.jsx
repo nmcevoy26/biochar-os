@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-export default function SaveConfirmation({ show, onDone }) {
+export default function SaveConfirmation({ show, message = 'Saved', onDone }) {
   const [visible, setVisible] = useState(false)
 
   useEffect(() => {
@@ -24,7 +24,7 @@ export default function SaveConfirmation({ show, onDone }) {
             <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
-        <span className="text-2xl font-bold text-gray-800">Saved</span>
+        <span className="text-2xl font-bold text-gray-800 text-center px-2">{message}</span>
       </div>
     </div>
   )

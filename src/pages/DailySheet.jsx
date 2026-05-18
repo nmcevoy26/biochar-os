@@ -24,7 +24,36 @@ const EMPTY_BAG = {
   subsample_taken: false,
 }
 
-export default function DailySheet({ online, operator: loggedInOperator }) {
+// Pure status derivation for the header indicator. Listed in priority order:
+// transient states (saving, hard failure) win over steady states. Tailwind
+// class names must appear as full string literals so the JIT picks them up.
+function getSaveStatus({ saving, online, dirty, queueCount, autoSaveFailCount, lastSavedAt }) {
+  if (saving && online) {
+    return { dot: 'bg-amber-400', text: 'text-amber-600', label: 'Saving…' }
+  }
+  if (autoSaveFailCount >= 3) {
+    return { dot: 'bg-red-500', text: 'text-red-600', label: 'Save failed — try manual save' }
+  }
+  if (!online && (dirty || queueCount > 0)) {
+    return { dot: 'bg-blue-400', text: 'text-blue-600', label: 'Saved locally — will sync' }
+  }
+  if (online && queueCount > 0) {
+    return { dot: 'bg-amber-400', text: 'text-amber-600', label: 'Syncing…' }
+  }
+  if (dirty && online) {
+    return { dot: 'bg-orange-400', text: 'text-orange-600', label: 'Unsaved changes' }
+  }
+  if (lastSavedAt && online && queueCount === 0) {
+    return {
+      dot: 'bg-green-500',
+      text: 'text-gray-500',
+      label: `Saved ${lastSavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+    }
+  }
+  return null
+}
+
+export default function DailySheet({ online, operator: loggedInOperator, queueCount = 0, onQueueChange }) {
   const [date, setDate] = useState(todayISO())
   const [shift, setShift] = useState(detectShift())
   const [machineKey, setMachineKey] = useState(
@@ -48,7 +77,7 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
   const [nextBagNum, setNextBagNum] = useState(1)
   const [addingBag, setAddingBag] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [showSaved, setShowSaved] = useState(false)
+  const [savedMessage, setSavedMessage] = useState(null)
   const [existingId, setExistingId] = useState(null)
   const [dirty, setDirty] = useState(false)
   const [flashIdx, setFlashIdx] = useState(null)
@@ -395,9 +424,13 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
             })
           }
         }
-        if (!silent) setShowSaved(true)
+        // Offline save: don't claim lastSavedAt — that's reserved for confirmed
+        // Supabase writes. The (online=false, queueCount>0) state drives the
+        // "Saved locally — will sync" indicator. Nudge App's queueCount so the
+        // dot appears without waiting for the 5s poll.
+        if (!silent) setSavedMessage('Saved locally — will sync')
         setDirty(false)
-        setLastSavedAt(new Date())
+        onQueueChange?.()
         setSaving(false)
         return
       }
@@ -552,7 +585,7 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
       setDirty(false)
       setLastSavedAt(new Date())
       if (!silent) {
-        setShowSaved(true)
+        setSavedMessage('Saved')
         if (navigator.vibrate) navigator.vibrate(50)
       }
       setFlashIdx(null)
@@ -594,6 +627,17 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
     return () => clearTimeout(timer)
   }, [dirty, saving, autoSaveFailCount])
 
+  // When App.jsx successfully drains the offline queue (queueCount transitions
+  // from >0 to 0 while online), stamp lastSavedAt with the drain time so the
+  // indicator flips from "Syncing…" to "Saved HH:MM".
+  const prevQueueCountRef = useRef(queueCount)
+  useEffect(() => {
+    if (prevQueueCountRef.current > 0 && queueCount === 0 && online) {
+      setLastSavedAt(new Date())
+    }
+    prevQueueCountRef.current = queueCount
+  }, [queueCount, online])
+
   const feedstockInput =
     feedstockStartWeight !== '' && feedstockEndWeight !== ''
       ? Math.max(0, Number(feedstockStartWeight) - Number(feedstockEndWeight)).toFixed(2)
@@ -603,19 +647,18 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
     <div className="pb-28 px-4 pt-4 max-w-2xl mx-auto">
       <div className="flex items-center justify-between mb-4 gap-3">
         <h1 className="text-2xl font-bold">Daily Production Sheet</h1>
-        <span className="text-xs text-right flex-shrink-0">
-          {saving ? (
-            <span className="text-gray-500">Saving…</span>
-          ) : autoSaveFailCount >= 3 ? (
-            <span className="text-red-500 font-medium">Save failed — try manual save</span>
-          ) : dirty ? (
-            <span className="text-orange-500">Unsaved changes</span>
-          ) : lastSavedAt ? (
-            <span className="text-gray-500">
-              Saved {lastSavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        {(() => {
+          const status = getSaveStatus({
+            saving, online, dirty, queueCount, autoSaveFailCount, lastSavedAt,
+          })
+          if (!status) return null
+          return (
+            <span className="text-xs flex items-center gap-1.5 flex-shrink-0">
+              <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${status.dot}`} />
+              <span className={status.text}>{status.label}</span>
             </span>
-          ) : null}
-        </span>
+          )
+        })()}
       </div>
 
       {/* Header */}
@@ -949,7 +992,11 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
         {saving ? 'Saving...' : existingId ? 'Update Run Sheet' : 'Save Run Sheet'}
       </button>
 
-      <SaveConfirmation show={showSaved} onDone={() => setShowSaved(false)} />
+      <SaveConfirmation
+        show={!!savedMessage}
+        message={savedMessage || 'Saved'}
+        onDone={() => setSavedMessage(null)}
+      />
     </div>
   )
 }

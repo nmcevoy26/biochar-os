@@ -88,7 +88,14 @@ export default function App() {
           {/* Page content */}
           <main>
             {tab === 'today' && <Today />}
-            {tab === 'daily' && <DailySheet online={online} operator={operator} />}
+            {tab === 'daily' && (
+              <DailySheet
+                online={online}
+                operator={operator}
+                queueCount={queueCount}
+                onQueueChange={() => setQueueCount(getQueue().length)}
+              />
+            )}
             {tab === 'weekly' && <WeeklySample online={online} />}
           </main>
 
