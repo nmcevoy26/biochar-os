@@ -9,19 +9,36 @@ import WoodVinegarSection from '../components/WoodVinegarSection'
 
 const NEW_WV_BATCH = '__new__'
 
-function nextBatchId(latestBatchId) {
-  if (!latestBatchId) return 'WV001'
-  const num = parseInt(String(latestBatchId).replace(/\D/g, ''), 10)
-  if (isNaN(num)) return 'WV001'
-  return 'WV' + String(num + 1).padStart(3, '0')
-}
-
 const EMPTY_BAG = {
   bulk_bag_id: '',
   wet_weight_kg: '',
   moisture_pct: '',
   volume_m3: 1,
   subsample_taken: false,
+}
+
+// Pure helpers for client-side allocation of new WV batch identifiers. Both
+// scan the in-memory batch list (loaded at mount + refreshed after every
+// queue drain), apply strict regex matching so legacy non-canonical values
+// are ignored, and return the next-highest number formatted canonically.
+// Allocating client-side avoids a Supabase round-trip during the offline-
+// autosave path that this PR's structural fix relies on.
+function allocateNextBatchId(batches) {
+  let max = 0
+  for (const b of batches) {
+    const m = b?.batch_id?.match(/^WV(\d{3})$/)
+    if (m) max = Math.max(max, parseInt(m[1], 10))
+  }
+  return `WV${String(max + 1).padStart(3, '0')}`
+}
+
+function allocateNextIbcLocation(batches) {
+  let max = 0
+  for (const b of batches) {
+    const m = b?.location?.match(/^IBC#(\d+)$/)
+    if (m) max = Math.max(max, parseInt(m[1], 10))
+  }
+  return `IBC#${max + 1}`
 }
 
 // Pure status derivation for the header indicator. Listed in priority order:
@@ -86,11 +103,14 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   const [autoSaveFailCount, setAutoSaveFailCount] = useState(0)
   const handleSaveRef = useRef(null)
 
-  // Wood vinegar (CP500 only)
+  // Wood vinegar (CP500 only). wvBatches holds ALL batches (any status) so
+  // location allocation considers closed/dispatched IBC numbers and avoids
+  // recycling them. The dropdown render site filters to status='open' for
+  // the existing-batch picker.
   const [wvCollected, setWvCollected] = useState(false)
-  const [wvOpenBatches, setWvOpenBatches] = useState([])
+  const [wvBatches, setWvBatches] = useState([])
   const [wvBatchChoice, setWvBatchChoice] = useState('')
-  const [wvNewLocation, setWvNewLocation] = useState('')
+  const [wvNewBatch, setWvNewBatch] = useState(null) // { id, batch_id, location } when operator is creating a new batch
   const [wvVolume, setWvVolume] = useState('')
   const [wvNotes, setWvNotes] = useState('')
   const [wvCloseBatch, setWvCloseBatch] = useState(false)
@@ -103,7 +123,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   function resetWoodVinegar() {
     setWvCollected(false)
     setWvBatchChoice('')
-    setWvNewLocation('')
+    setWvNewBatch(null)
     setWvVolume('')
     setWvNotes('')
     setWvCloseBatch(false)
@@ -137,16 +157,18 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
       })
   }, [])
 
-  // Load open wood vinegar batches (CP500 only)
+  // Load all wood vinegar batches (CP500 only). No status filter — the
+  // dropdown render site filters to status='open' for the picker, but
+  // allocation needs to see closed/dispatched batches too so we don't
+  // recycle their IBC numbers (physical tank labels persist after closure).
   useEffect(() => {
     if (!isCP500) return
     supabase
       .from('v_wood_vinegar_batches')
       .select('*')
-      .eq('status', 'open')
       .order('batch_id')
       .then(({ data }) => {
-        if (data) setWvOpenBatches(data)
+        if (data) setWvBatches(data)
       })
   }, [isCP500])
 
@@ -428,18 +450,35 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             onConflict: 'id',
           })
         }
-        // Wood vinegar offline: only an existing batch (new-batch UX still
-        // needs network for the sequential WV### id). wvExistingFillId is
-        // pre-allocated when wvCollected toggles on, so upsert is safe even
-        // on the first save. Gated on wvValid so a partial WV state during
-        // silent autosave skips this section without blocking the rest.
-        if (wvValid && isCP500 && wvCollected && wvBatchChoice && wvBatchChoice !== NEW_WV_BATCH) {
+        // Wood vinegar offline. New-batch creation is now offline-safe:
+        // wvNewBatch carries a pre-allocated UUID + canonical batch_id +
+        // canonical IBC#N location set synchronously when the operator
+        // picked "+ Start new batch". We enqueue the batch upsert FIRST so
+        // the fill's foreign-key target exists by the time the queue drains.
+        // wvExistingFillId is pre-allocated when wvCollected toggles on, so
+        // the fill upsert is idempotent across autosave cycles too.
+        if (wvValid && isCP500 && wvCollected && wvBatchChoice) {
+          const isNewBatch = wvBatchChoice === NEW_WV_BATCH && wvNewBatch
+          const fillBatchId = isNewBatch ? wvNewBatch.id : wvBatchChoice
+          if (isNewBatch) {
+            enqueue({
+              table: 'wood_vinegar_batches',
+              type: 'upsert',
+              data: {
+                id: wvNewBatch.id,
+                batch_id: wvNewBatch.batch_id,
+                location: wvNewBatch.location,
+                status: 'open',
+              },
+              onConflict: 'id',
+            })
+          }
           enqueue({
             table: 'wood_vinegar_fills',
             type: 'upsert',
             data: {
               id: wvExistingFillId,
-              batch_id: wvBatchChoice,
+              batch_id: fillBatchId,
               production_id: existingId,
               operator_id: loggedInOperator?.id || null,
               fill_date: date,
@@ -449,7 +488,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             },
             onConflict: 'id',
           })
-          if (wvCloseBatch) {
+          if (wvCloseBatch && !isNewBatch) {
             enqueue({
               table: 'wood_vinegar_batches',
               type: 'update',
@@ -517,33 +556,29 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
 
       // Wood vinegar save (CP500 + collected toggled on). wvValid gates
       // silent autosave from attempting a save of in-progress WV state.
+      // With pre-allocated UUIDs the online path is now a straight upsert
+      // — no separate INSERT-then-read-id round-trip, no retry loop. If a
+      // simultaneous-operator race causes a 23505 on either the WV### key
+      // or the partial IBC#N unique index, it propagates as an error
+      // (autoSaveFailCount handles the retry-vs-give-up behaviour at the
+      // autosave-loop level).
       if (wvValid && isCP500 && wvCollected) {
-        let batchUuid = wvBatchChoice
+        const isNewBatch = wvBatchChoice === NEW_WV_BATCH && wvNewBatch
+        const batchUuid = isNewBatch ? wvNewBatch.id : wvBatchChoice
 
-        if (wvBatchChoice === NEW_WV_BATCH) {
-          // Generate next WV### with one retry on unique-violation
-          for (let attempt = 0; attempt < 2; attempt++) {
-            const { data: latestBatch } = await supabase
-              .from('wood_vinegar_batches')
-              .select('batch_id')
-              .order('batch_id', { ascending: false })
-              .limit(1)
-            const candidate = nextBatchId(latestBatch?.[0]?.batch_id)
-            const { data: inserted, error: insertErr } = await supabase
-              .from('wood_vinegar_batches')
-              .insert({
-                batch_id: candidate,
-                location: wvNewLocation || null,
+        if (isNewBatch) {
+          const { error: batchErr } = await supabase
+            .from('wood_vinegar_batches')
+            .upsert(
+              {
+                id: wvNewBatch.id,
+                batch_id: wvNewBatch.batch_id,
+                location: wvNewBatch.location,
                 status: 'open',
-              })
-              .select('id')
-              .single()
-            if (!insertErr) {
-              batchUuid = inserted.id
-              break
-            }
-            if (insertErr.code !== '23505' || attempt === 1) throw insertErr
-          }
+              },
+              { onConflict: 'id' },
+            )
+          if (batchErr) throw batchErr
         }
 
         // wvExistingFillId is pre-allocated when wvCollected toggles on, so
@@ -565,10 +600,15 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           .upsert(fillPayload, { onConflict: 'id' })
         if (fillErr) throw fillErr
 
-        // Reflect any locally-known batch_id swap (new-batch -> uuid)
-        if (wvBatchChoice === NEW_WV_BATCH) setWvBatchChoice(batchUuid)
+        // Reflect the new-batch promotion locally: the sentinel choice
+        // becomes the real UUID, and the staging wvNewBatch is cleared
+        // because the row exists in the DB now.
+        if (isNewBatch) {
+          setWvBatchChoice(batchUuid)
+          setWvNewBatch(null)
+        }
 
-        if (wvCloseBatch && wvBatchChoice !== NEW_WV_BATCH) {
+        if (wvCloseBatch && !isNewBatch) {
           const { error } = await supabase
             .from('wood_vinegar_batches')
             .update({
@@ -581,13 +621,12 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           setWvCloseBatch(false)
         }
 
-        // Refresh open batches dropdown
+        // Refresh batch list (all statuses — allocation needs to see them)
         const { data: refreshed } = await supabase
           .from('v_wood_vinegar_batches')
           .select('*')
-          .eq('status', 'open')
           .order('batch_id')
-        if (refreshed) setWvOpenBatches(refreshed)
+        if (refreshed) setWvBatches(refreshed)
       }
 
       // Refresh next bag number
@@ -652,10 +691,11 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   // indicator flips from "Syncing…" to "Saved HH:MM". Also mark every visible
   // bag as _saved — the queue is empty so they've all landed in the DB, and
   // the UI's "saved bag" styling (green border, confirm-on-remove) should
-  // reflect that. Finally, re-fetch the WV batch dropdown so totals/fill
-  // counts reflect any wood_vinegar_fills rows that just synced — without
-  // this the dropdown keeps showing the pre-sync "0L (0 fills)" snapshot
-  // and the operator may add a duplicate fill thinking the first failed.
+  // reflect that. Re-fetch the WV batch list (all statuses — allocation
+  // needs the full picture) so totals/fill counts reflect rows that just
+  // synced. Finally, if a locally-allocated new batch is now persisted,
+  // swap the sentinel choice to its real UUID and clear wvNewBatch so the
+  // UI stops showing the "New batch: WV### — IBC#N" display.
   const prevQueueCountRef = useRef(queueCount)
   useEffect(() => {
     if (prevQueueCountRef.current > 0 && queueCount === 0 && online) {
@@ -665,15 +705,18 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         supabase
           .from('v_wood_vinegar_batches')
           .select('*')
-          .eq('status', 'open')
           .order('batch_id')
           .then(({ data }) => {
-            if (data) setWvOpenBatches(data)
+            if (data) setWvBatches(data)
           })
+      }
+      if (wvNewBatch) {
+        setWvBatchChoice(wvNewBatch.id)
+        setWvNewBatch(null)
       }
     }
     prevQueueCountRef.current = queueCount
-  }, [queueCount, online, isCP500])
+  }, [queueCount, online, isCP500, wvNewBatch])
 
   const feedstockInput =
     feedstockStartWeight !== '' && feedstockEndWeight !== ''
@@ -995,17 +1038,29 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             if (!v) setWvErrors({})
             markDirty()
           }}
-          openBatches={wvOpenBatches}
+          openBatches={wvBatches.filter((b) => b.status === 'open')}
           batchChoice={wvBatchChoice}
           onBatchChoiceChange={(v) => {
             setWvBatchChoice(v)
-            if (v !== NEW_WV_BATCH) setWvNewLocation('')
+            if (v === NEW_WV_BATCH) {
+              // Allocate canonical WV### + IBC#N synchronously from the
+              // in-memory list so the read-only display shows the values
+              // immediately on this same render — no async "Allocating…"
+              // flash. Pre-allocated UUID makes the batch upsertable on
+              // both offline and online save paths.
+              setWvNewBatch({
+                id: crypto.randomUUID(),
+                batch_id: allocateNextBatchId(wvBatches),
+                location: allocateNextIbcLocation(wvBatches),
+              })
+            } else {
+              setWvNewBatch(null)
+            }
             if (v === NEW_WV_BATCH || v === '') setWvCloseBatch(false)
             setWvErrors((e) => ({ ...e, batch: undefined }))
             markDirty()
           }}
-          newLocation={wvNewLocation}
-          onNewLocationChange={(v) => { setWvNewLocation(v); markDirty() }}
+          newBatch={wvNewBatch}
           volume={wvVolume}
           onVolumeChange={(v) => {
             setWvVolume(v)
