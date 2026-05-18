@@ -359,13 +359,19 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
 
   async function handleSave({ silent = false } = {}) {
     const wvErrs = validateWoodVinegar()
-    if (Object.keys(wvErrs).length > 0) {
-      // In silent (auto-save) mode, don't paint validation errors on the form
-      // before the operator has tried to save. Just bail this cycle.
-      if (silent) return
+    const wvValid = Object.keys(wvErrs).length === 0
+    if (!wvValid && !silent) {
+      // Manual save with incomplete WV — surface the errors and abort
+      // so the operator can fix them.
       setWvErrors(wvErrs)
       return
     }
+    // Silent autosave falls through with wvValid=false, skipping just
+    // the WV section below. Without this, an in-progress WV section
+    // would block daily_production/bag saves entirely — and because
+    // dirty stays true while the autosave effect's deps don't change,
+    // a single bailed cycle would freeze autosave for the rest of the
+    // session.
 
     setSaving(true)
     try {
@@ -425,8 +431,9 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         // Wood vinegar offline: only an existing batch (new-batch UX still
         // needs network for the sequential WV### id). wvExistingFillId is
         // pre-allocated when wvCollected toggles on, so upsert is safe even
-        // on the first save.
-        if (isCP500 && wvCollected && wvBatchChoice && wvBatchChoice !== NEW_WV_BATCH) {
+        // on the first save. Gated on wvValid so a partial WV state during
+        // silent autosave skips this section without blocking the rest.
+        if (wvValid && isCP500 && wvCollected && wvBatchChoice && wvBatchChoice !== NEW_WV_BATCH) {
           enqueue({
             table: 'wood_vinegar_fills',
             type: 'upsert',
@@ -508,8 +515,9 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         setFlashIdx(i)
       }
 
-      // Wood vinegar save (CP500 + collected toggled on)
-      if (isCP500 && wvCollected) {
+      // Wood vinegar save (CP500 + collected toggled on). wvValid gates
+      // silent autosave from attempting a save of in-progress WV state.
+      if (wvValid && isCP500 && wvCollected) {
         let batchUuid = wvBatchChoice
 
         if (wvBatchChoice === NEW_WV_BATCH) {
