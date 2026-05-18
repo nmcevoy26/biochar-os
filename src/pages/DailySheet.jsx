@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase, MACHINES, detectShift, todayISO } from '../lib/supabase'
 import { enqueue } from '../lib/offline'
 import ToggleGroup from '../components/ToggleGroup'
@@ -53,6 +53,9 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
   const [dirty, setDirty] = useState(false)
   const [flashIdx, setFlashIdx] = useState(null)
   const [readingsOpen, setReadingsOpen] = useState(false)
+  const [lastSavedAt, setLastSavedAt] = useState(null)
+  const [autoSaveFailCount, setAutoSaveFailCount] = useState(0)
+  const handleSaveRef = useRef(null)
 
   // Wood vinegar (CP500 only)
   const [wvCollected, setWvCollected] = useState(false)
@@ -296,10 +299,15 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
     return errs
   }
 
-  async function handleSave() {
+  async function handleSave({ silent = false } = {}) {
     const wvErrs = validateWoodVinegar()
-    setWvErrors(wvErrs)
-    if (Object.keys(wvErrs).length > 0) return
+    if (Object.keys(wvErrs).length > 0) {
+      // In silent (auto-save) mode, don't paint validation errors on the form
+      // before the operator has tried to save. Just bail this cycle.
+      if (silent) return
+      setWvErrors(wvErrs)
+      return
+    }
 
     setSaving(true)
     try {
@@ -387,8 +395,9 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
             })
           }
         }
-        setShowSaved(true)
+        if (!silent) setShowSaved(true)
         setDirty(false)
+        setLastSavedAt(new Date())
         setSaving(false)
         return
       }
@@ -541,15 +550,49 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
 
       setBags([...bags])
       setDirty(false)
-      setShowSaved(true)
+      setLastSavedAt(new Date())
+      if (!silent) {
+        setShowSaved(true)
+        if (navigator.vibrate) navigator.vibrate(50)
+      }
       setFlashIdx(null)
-      if (navigator.vibrate) navigator.vibrate(50)
     } catch (err) {
+      if (silent) {
+        throw err
+      }
       alert('Save failed: ' + err.message)
     } finally {
       setSaving(false)
     }
   }
+
+  // Keep a stable ref to the latest handleSave so the auto-save effect can
+  // call it without needing every form-state variable in its dep array.
+  handleSaveRef.current = handleSave
+
+  // Reset the auto-save indicator when the operator loads a different
+  // day/shift/machine — the new record isn't "dirty" or "saved" yet.
+  useEffect(() => {
+    setLastSavedAt(null)
+    setAutoSaveFailCount(0)
+  }, [date, shift, machineId])
+
+  // Debounced auto-save: 3s after the last change, persist silently.
+  // After 3 consecutive failures, stop retrying — the operator must
+  // intervene with a manual save (the indicator surfaces this state).
+  useEffect(() => {
+    if (!dirty || saving || autoSaveFailCount >= 3) return
+    const timer = setTimeout(async () => {
+      try {
+        await handleSaveRef.current({ silent: true })
+        setAutoSaveFailCount(0)
+      } catch (err) {
+        console.error('Auto-save failed', err)
+        setAutoSaveFailCount((c) => c + 1)
+      }
+    }, 3000)
+    return () => clearTimeout(timer)
+  }, [dirty, saving, autoSaveFailCount])
 
   const feedstockInput =
     feedstockStartWeight !== '' && feedstockEndWeight !== ''
@@ -558,9 +601,21 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
 
   return (
     <div className="pb-28 px-4 pt-4 max-w-2xl mx-auto">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 gap-3">
         <h1 className="text-2xl font-bold">Daily Production Sheet</h1>
-        {dirty && <span className="w-3 h-3 rounded-full bg-orange-400 flex-shrink-0" title="Unsaved changes" />}
+        <span className="text-xs text-right flex-shrink-0">
+          {saving ? (
+            <span className="text-gray-500">Saving…</span>
+          ) : autoSaveFailCount >= 3 ? (
+            <span className="text-red-500 font-medium">Save failed — try manual save</span>
+          ) : dirty ? (
+            <span className="text-orange-500">Unsaved changes</span>
+          ) : lastSavedAt ? (
+            <span className="text-gray-500">
+              Saved {lastSavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </span>
+          ) : null}
+        </span>
       </div>
 
       {/* Header */}
