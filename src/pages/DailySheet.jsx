@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { supabase, MACHINES, detectShift, todayISO } from '../lib/supabase'
-import { enqueue } from '../lib/offline'
+import { enqueue, dequeueOps } from '../lib/offline'
 import ToggleGroup from '../components/ToggleGroup'
 import Toggle from '../components/Toggle'
 import NumberInput from '../components/NumberInput'
@@ -8,13 +8,6 @@ import SaveConfirmation from '../components/SaveConfirmation'
 import WoodVinegarSection from '../components/WoodVinegarSection'
 
 const NEW_WV_BATCH = '__new__'
-
-function nextBatchId(latestBatchId) {
-  if (!latestBatchId) return 'WV001'
-  const num = parseInt(String(latestBatchId).replace(/\D/g, ''), 10)
-  if (isNaN(num)) return 'WV001'
-  return 'WV' + String(num + 1).padStart(3, '0')
-}
 
 const EMPTY_BAG = {
   bulk_bag_id: '',
@@ -24,7 +17,60 @@ const EMPTY_BAG = {
   subsample_taken: false,
 }
 
-export default function DailySheet({ online, operator: loggedInOperator }) {
+// Pure helpers for client-side allocation of new WV batch identifiers. Both
+// scan the in-memory batch list (loaded at mount + refreshed after every
+// queue drain), apply strict regex matching so legacy non-canonical values
+// are ignored, and return the next-highest number formatted canonically.
+// Allocating client-side avoids a Supabase round-trip during the offline-
+// autosave path that this PR's structural fix relies on.
+function allocateNextBatchId(batches) {
+  let max = 0
+  for (const b of batches) {
+    const m = b?.batch_id?.match(/^WV(\d{3})$/)
+    if (m) max = Math.max(max, parseInt(m[1], 10))
+  }
+  return `WV${String(max + 1).padStart(3, '0')}`
+}
+
+function allocateNextIbcLocation(batches) {
+  let max = 0
+  for (const b of batches) {
+    const m = b?.location?.match(/^IBC#(\d+)$/)
+    if (m) max = Math.max(max, parseInt(m[1], 10))
+  }
+  return `IBC#${max + 1}`
+}
+
+// Pure status derivation for the header indicator. Listed in priority order:
+// transient states (saving, hard failure) win over steady states. Tailwind
+// class names must appear as full string literals so the JIT picks them up.
+function getSaveStatus({ saving, online, dirty, queueCount, autoSaveFailCount, lastSavedAt }) {
+  if (saving && online) {
+    return { dot: 'bg-amber-400', text: 'text-amber-600', label: 'Saving…' }
+  }
+  if (autoSaveFailCount >= 3) {
+    return { dot: 'bg-red-500', text: 'text-red-600', label: 'Save failed — try manual save' }
+  }
+  if (!online && (dirty || queueCount > 0)) {
+    return { dot: 'bg-blue-400', text: 'text-blue-600', label: 'Saved locally — will sync' }
+  }
+  if (online && queueCount > 0) {
+    return { dot: 'bg-amber-400', text: 'text-amber-600', label: 'Syncing…' }
+  }
+  if (dirty && online) {
+    return { dot: 'bg-orange-400', text: 'text-orange-600', label: 'Unsaved changes' }
+  }
+  if (lastSavedAt && online && queueCount === 0) {
+    return {
+      dot: 'bg-green-500',
+      text: 'text-gray-500',
+      label: `Saved ${lastSavedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+    }
+  }
+  return null
+}
+
+export default function DailySheet({ online, operator: loggedInOperator, queueCount = 0, onQueueChange }) {
   const [date, setDate] = useState(todayISO())
   const [shift, setShift] = useState(detectShift())
   const [machineKey, setMachineKey] = useState(
@@ -48,17 +94,23 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
   const [nextBagNum, setNextBagNum] = useState(1)
   const [addingBag, setAddingBag] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [showSaved, setShowSaved] = useState(false)
+  const [savedMessage, setSavedMessage] = useState(null)
   const [existingId, setExistingId] = useState(null)
   const [dirty, setDirty] = useState(false)
   const [flashIdx, setFlashIdx] = useState(null)
   const [readingsOpen, setReadingsOpen] = useState(false)
+  const [lastSavedAt, setLastSavedAt] = useState(null)
+  const [autoSaveFailCount, setAutoSaveFailCount] = useState(0)
+  const handleSaveRef = useRef(null)
 
-  // Wood vinegar (CP500 only)
+  // Wood vinegar (CP500 only). wvBatches holds ALL batches (any status) so
+  // location allocation considers closed/dispatched IBC numbers and avoids
+  // recycling them. The dropdown render site filters to status='open' for
+  // the existing-batch picker.
   const [wvCollected, setWvCollected] = useState(false)
-  const [wvOpenBatches, setWvOpenBatches] = useState([])
+  const [wvBatches, setWvBatches] = useState([])
   const [wvBatchChoice, setWvBatchChoice] = useState('')
-  const [wvNewLocation, setWvNewLocation] = useState('')
+  const [wvNewBatch, setWvNewBatch] = useState(null) // { id, batch_id, location } when operator is creating a new batch
   const [wvVolume, setWvVolume] = useState('')
   const [wvNotes, setWvNotes] = useState('')
   const [wvCloseBatch, setWvCloseBatch] = useState(false)
@@ -71,7 +123,7 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
   function resetWoodVinegar() {
     setWvCollected(false)
     setWvBatchChoice('')
-    setWvNewLocation('')
+    setWvNewBatch(null)
     setWvVolume('')
     setWvNotes('')
     setWvCloseBatch(false)
@@ -105,16 +157,18 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
       })
   }, [])
 
-  // Load open wood vinegar batches (CP500 only)
+  // Load all wood vinegar batches (CP500 only). No status filter — the
+  // dropdown render site filters to status='open' for the picker, but
+  // allocation needs to see closed/dispatched batches too so we don't
+  // recycle their IBC numbers (physical tank labels persist after closure).
   useEffect(() => {
     if (!isCP500) return
     supabase
       .from('v_wood_vinegar_batches')
       .select('*')
-      .eq('status', 'open')
       .order('batch_id')
       .then(({ data }) => {
-        if (data) setWvOpenBatches(data)
+        if (data) setWvBatches(data)
       })
   }, [isCP500])
 
@@ -122,6 +176,17 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
   useEffect(() => {
     if (!isCP500) resetWoodVinegar()
   }, [isCP500])
+
+  // Pre-allocate the wood vinegar fill UUID the moment the operator toggles
+  // "collected" on, so subsequent autosaves (offline or online) target the
+  // same row instead of generating a fresh id each cycle. Without this every
+  // offline autosave would silently INSERT a duplicate fill — wood_vinegar_fills
+  // has no business-key unique constraint to catch dupes.
+  useEffect(() => {
+    if (isCP500 && wvCollected && !wvExistingFillId) {
+      setWvExistingFillId(crypto.randomUUID())
+    }
+  }, [isCP500, wvCollected, wvExistingFillId])
 
   // Load existing production record for this date/shift/machine
   useEffect(() => {
@@ -189,7 +254,11 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
             resetWoodVinegar()
           }
         } else {
-          setExistingId(null)
+          // No row in the DB for this date/shift/machine yet — pre-allocate a
+          // stable UUID so the form has an identity from the moment of editing.
+          // The first save (online or via queue drain) inserts this exact id;
+          // every subsequent save upserts onto the same row.
+          setExistingId(crypto.randomUUID())
           setOperatorName(loggedInOperator?.name || '')
           setFeedstockStartWeight('')
           setFeedstockEndWeight('')
@@ -244,7 +313,9 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
     }
     const unsavedCount = bags.filter((b) => !b._saved).length
     const bagId = 'GRIP' + String(baseNum + unsavedCount).padStart(5, '0')
-    setBags((prev) => [...prev, { ...EMPTY_BAG, bulk_bag_id: bagId }])
+    // Pre-allocate the bag's UUID client-side so every save (offline or
+    // online) targets the same row, no matter how many times autosave fires.
+    setBags((prev) => [...prev, { ...EMPTY_BAG, id: crypto.randomUUID(), bulk_bag_id: bagId }])
     markDirty()
     setAddingBag(false)
     // Scroll to bottom after render
@@ -268,7 +339,19 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
     setBags((prev) => prev.filter((_, i) => i !== index))
     markDirty()
 
-    // Delete from Supabase in background if already persisted
+    // Drop any pending queued op for this bag — covers the "added offline then
+    // removed before sync" case so a stale upsert can't recreate the bag on
+    // the next drain.
+    if (bag.id) {
+      const dropped = dequeueOps(
+        (op) =>
+          op.table === 'bulk_bags' &&
+          (op.data?.id === bag.id || op.match?.id === bag.id),
+      )
+      if (dropped > 0) onQueueChange?.()
+    }
+
+    // Delete from Supabase in background if already persisted to the DB
     if (bag._saved && bag.id) {
       supabase
         .from('bulk_bags')
@@ -296,10 +379,21 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
     return errs
   }
 
-  async function handleSave() {
+  async function handleSave({ silent = false } = {}) {
     const wvErrs = validateWoodVinegar()
-    setWvErrors(wvErrs)
-    if (Object.keys(wvErrs).length > 0) return
+    const wvValid = Object.keys(wvErrs).length === 0
+    if (!wvValid && !silent) {
+      // Manual save with incomplete WV — surface the errors and abort
+      // so the operator can fix them.
+      setWvErrors(wvErrs)
+      return
+    }
+    // Silent autosave falls through with wvValid=false, skipping just
+    // the WV section below. Without this, an in-progress WV section
+    // would block daily_production/bag saves entirely — and because
+    // dirty stays true while the autosave effect's deps don't change,
+    // a single bailed cycle would freeze autosave for the rest of the
+    // session.
 
     setSaving(true)
     try {
@@ -324,61 +418,77 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
       }
 
       if (!online) {
+        // Every offline write is an upsert keyed on the client-allocated id.
+        // Coalescing in enqueue keeps the queue at one op per logical record
+        // even when autosave fires repeatedly, so replay on reconnect is
+        // idempotent and the unique constraint on (machine_id, date, shift)
+        // never trips.
         enqueue({
           table: 'daily_production',
-          type: existingId ? 'update' : 'insert',
-          data: existingId ? productionData : { ...productionData, id: crypto.randomUUID() },
-          match: existingId ? { id: existingId } : undefined,
+          type: 'upsert',
+          data: { ...productionData, id: existingId },
+          onConflict: 'id',
         })
         for (const bag of bags) {
-          if (!bag._saved) {
-            enqueue({
-              table: 'bulk_bags',
-              type: 'insert',
-              data: {
-                bulk_bag_id: bag.bulk_bag_id,
-                fill_date: date,
-                shift,
-                machine_id: machineId,
-                operator_id: loggedInOperator?.id || null,
-                wet_weight_kg: bag.wet_weight_kg === '' ? null : Number(bag.wet_weight_kg),
-                moisture_pct: bag.moisture_pct === '' ? null : Number(bag.moisture_pct),
-                volume_m3: bag.volume_m3 === '' ? null : Number(bag.volume_m3),
-                subsample_taken: bag.subsample_taken || false,
-              },
-            })
-          }
+          enqueue({
+            table: 'bulk_bags',
+            type: 'upsert',
+            data: {
+              id: bag.id,
+              bulk_bag_id: bag.bulk_bag_id,
+              fill_date: date,
+              shift,
+              machine_id: machineId,
+              production_id: existingId,
+              operator_id: loggedInOperator?.id || null,
+              wet_weight_kg: bag.wet_weight_kg === '' ? null : Number(bag.wet_weight_kg),
+              moisture_pct: bag.moisture_pct === '' ? null : Number(bag.moisture_pct),
+              volume_m3: bag.volume_m3 === '' ? null : Number(bag.volume_m3),
+              subsample_taken: bag.subsample_taken || false,
+              updated_at: new Date().toISOString(),
+            },
+            onConflict: 'id',
+          })
         }
-        // Wood vinegar offline: only existing batch (new-batch UX is gated to online)
-        if (isCP500 && wvCollected && wvBatchChoice && wvBatchChoice !== NEW_WV_BATCH && existingId) {
-          if (wvExistingFillId) {
+        // Wood vinegar offline. New-batch creation is now offline-safe:
+        // wvNewBatch carries a pre-allocated UUID + canonical batch_id +
+        // canonical IBC#N location set synchronously when the operator
+        // picked "+ Start new batch". We enqueue the batch upsert FIRST so
+        // the fill's foreign-key target exists by the time the queue drains.
+        // wvExistingFillId is pre-allocated when wvCollected toggles on, so
+        // the fill upsert is idempotent across autosave cycles too.
+        if (wvValid && isCP500 && wvCollected && wvBatchChoice) {
+          const isNewBatch = wvBatchChoice === NEW_WV_BATCH && wvNewBatch
+          const fillBatchId = isNewBatch ? wvNewBatch.id : wvBatchChoice
+          if (isNewBatch) {
             enqueue({
-              table: 'wood_vinegar_fills',
-              type: 'update',
+              table: 'wood_vinegar_batches',
+              type: 'upsert',
               data: {
-                batch_id: wvBatchChoice,
-                volume_liters: Number(wvVolume),
-                notes: wvNotes || null,
-                updated_at: new Date().toISOString(),
+                id: wvNewBatch.id,
+                batch_id: wvNewBatch.batch_id,
+                location: wvNewBatch.location,
+                status: 'open',
               },
-              match: { id: wvExistingFillId },
-            })
-          } else {
-            enqueue({
-              table: 'wood_vinegar_fills',
-              type: 'insert',
-              data: {
-                id: crypto.randomUUID(),
-                batch_id: wvBatchChoice,
-                production_id: existingId,
-                operator_id: loggedInOperator?.id || null,
-                fill_date: date,
-                volume_liters: Number(wvVolume),
-                notes: wvNotes || null,
-              },
+              onConflict: 'id',
             })
           }
-          if (wvCloseBatch) {
+          enqueue({
+            table: 'wood_vinegar_fills',
+            type: 'upsert',
+            data: {
+              id: wvExistingFillId,
+              batch_id: fillBatchId,
+              production_id: existingId,
+              operator_id: loggedInOperator?.id || null,
+              fill_date: date,
+              volume_liters: Number(wvVolume),
+              notes: wvNotes || null,
+              updated_at: new Date().toISOString(),
+            },
+            onConflict: 'id',
+          })
+          if (wvCloseBatch && !isNewBatch) {
             enqueue({
               table: 'wood_vinegar_batches',
               type: 'update',
@@ -387,29 +497,26 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
             })
           }
         }
-        setShowSaved(true)
+        // Offline save: don't claim lastSavedAt — that's reserved for confirmed
+        // Supabase writes. The (online=false, queueCount>0) state drives the
+        // "Saved locally — will sync" indicator. Nudge App's queueCount so the
+        // dot appears without waiting for the 5s poll.
+        if (!silent) setSavedMessage('Saved locally — will sync')
         setDirty(false)
+        onQueueChange?.()
         setSaving(false)
         return
       }
 
-      let productionId = existingId
-
-      if (existingId) {
+      // With existingId pre-allocated by the load effect, daily_production
+      // saves are unconditional upserts on the local UUID. First save inserts
+      // the row; every subsequent save updates it.
+      const productionId = existingId
+      {
         const { error } = await supabase
           .from('daily_production')
-          .update(productionData)
-          .eq('id', existingId)
+          .upsert({ ...productionData, id: productionId }, { onConflict: 'id' })
         if (error) throw error
-      } else {
-        const { data, error } = await supabase
-          .from('daily_production')
-          .insert(productionData)
-          .select('id')
-          .single()
-        if (error) throw error
-        productionId = data.id
-        setExistingId(data.id)
       }
 
       // Update feedstock link
@@ -421,10 +528,12 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
         })
       }
 
-      // Save bags
+      // Save bags. addBag pre-allocates bag.id so every bag is upsertable on
+      // its UUID — no branch on whether it exists in the DB yet.
       for (let i = 0; i < bags.length; i++) {
         const bag = bags[i]
         const bagData = {
+          id: bag.id,
           bulk_bag_id: bag.bulk_bag_id,
           fill_date: date,
           shift,
@@ -437,47 +546,46 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
           subsample_taken: bag.subsample_taken || false,
           updated_at: new Date().toISOString(),
         }
-        if (bag.id) {
-          await supabase.from('bulk_bags').update(bagData).eq('id', bag.id)
-        } else {
-          const { data } = await supabase.from('bulk_bags').insert(bagData).select('id').single()
-          if (data) bag.id = data.id
-        }
+        const { error } = await supabase
+          .from('bulk_bags')
+          .upsert(bagData, { onConflict: 'id' })
+        if (error) throw error
         bag._saved = true
         setFlashIdx(i)
       }
 
-      // Wood vinegar save (CP500 + collected toggled on)
-      if (isCP500 && wvCollected) {
-        let batchUuid = wvBatchChoice
+      // Wood vinegar save (CP500 + collected toggled on). wvValid gates
+      // silent autosave from attempting a save of in-progress WV state.
+      // With pre-allocated UUIDs the online path is now a straight upsert
+      // — no separate INSERT-then-read-id round-trip, no retry loop. If a
+      // simultaneous-operator race causes a 23505 on either the WV### key
+      // or the partial IBC#N unique index, it propagates as an error
+      // (autoSaveFailCount handles the retry-vs-give-up behaviour at the
+      // autosave-loop level).
+      if (wvValid && isCP500 && wvCollected) {
+        const isNewBatch = wvBatchChoice === NEW_WV_BATCH && wvNewBatch
+        const batchUuid = isNewBatch ? wvNewBatch.id : wvBatchChoice
 
-        if (wvBatchChoice === NEW_WV_BATCH) {
-          // Generate next WV### with one retry on unique-violation
-          for (let attempt = 0; attempt < 2; attempt++) {
-            const { data: latestBatch } = await supabase
-              .from('wood_vinegar_batches')
-              .select('batch_id')
-              .order('batch_id', { ascending: false })
-              .limit(1)
-            const candidate = nextBatchId(latestBatch?.[0]?.batch_id)
-            const { data: inserted, error: insertErr } = await supabase
-              .from('wood_vinegar_batches')
-              .insert({
-                batch_id: candidate,
-                location: wvNewLocation || null,
+        if (isNewBatch) {
+          const { error: batchErr } = await supabase
+            .from('wood_vinegar_batches')
+            .upsert(
+              {
+                id: wvNewBatch.id,
+                batch_id: wvNewBatch.batch_id,
+                location: wvNewBatch.location,
                 status: 'open',
-              })
-              .select('id')
-              .single()
-            if (!insertErr) {
-              batchUuid = inserted.id
-              break
-            }
-            if (insertErr.code !== '23505' || attempt === 1) throw insertErr
-          }
+              },
+              { onConflict: 'id' },
+            )
+          if (batchErr) throw batchErr
         }
 
+        // wvExistingFillId is pre-allocated when wvCollected toggles on, so
+        // we always have a stable id to upsert against. No more risk of
+        // accidental duplicate fills on autosave.
         const fillPayload = {
+          id: wvExistingFillId,
           batch_id: batchUuid,
           production_id: productionId,
           operator_id: loggedInOperator?.id || null,
@@ -487,26 +595,20 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
           updated_at: new Date().toISOString(),
         }
 
-        if (wvExistingFillId) {
-          const { error } = await supabase
-            .from('wood_vinegar_fills')
-            .update(fillPayload)
-            .eq('id', wvExistingFillId)
-          if (error) throw error
-        } else {
-          const { data: fillRow, error } = await supabase
-            .from('wood_vinegar_fills')
-            .insert(fillPayload)
-            .select('id')
-            .single()
-          if (error) throw error
-          setWvExistingFillId(fillRow.id)
+        const { error: fillErr } = await supabase
+          .from('wood_vinegar_fills')
+          .upsert(fillPayload, { onConflict: 'id' })
+        if (fillErr) throw fillErr
+
+        // Reflect the new-batch promotion locally: the sentinel choice
+        // becomes the real UUID, and the staging wvNewBatch is cleared
+        // because the row exists in the DB now.
+        if (isNewBatch) {
+          setWvBatchChoice(batchUuid)
+          setWvNewBatch(null)
         }
 
-        // Reflect any locally-known batch_id swap (new-batch -> uuid)
-        if (wvBatchChoice === NEW_WV_BATCH) setWvBatchChoice(batchUuid)
-
-        if (wvCloseBatch && wvBatchChoice !== NEW_WV_BATCH) {
+        if (wvCloseBatch && !isNewBatch) {
           const { error } = await supabase
             .from('wood_vinegar_batches')
             .update({
@@ -519,13 +621,12 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
           setWvCloseBatch(false)
         }
 
-        // Refresh open batches dropdown
+        // Refresh batch list (all statuses — allocation needs to see them)
         const { data: refreshed } = await supabase
           .from('v_wood_vinegar_batches')
           .select('*')
-          .eq('status', 'open')
           .order('batch_id')
-        if (refreshed) setWvOpenBatches(refreshed)
+        if (refreshed) setWvBatches(refreshed)
       }
 
       // Refresh next bag number
@@ -541,15 +642,81 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
 
       setBags([...bags])
       setDirty(false)
-      setShowSaved(true)
+      setLastSavedAt(new Date())
+      if (!silent) {
+        setSavedMessage('Saved')
+        if (navigator.vibrate) navigator.vibrate(50)
+      }
       setFlashIdx(null)
-      if (navigator.vibrate) navigator.vibrate(50)
     } catch (err) {
+      if (silent) {
+        throw err
+      }
       alert('Save failed: ' + err.message)
     } finally {
       setSaving(false)
     }
   }
+
+  // Keep a stable ref to the latest handleSave so the auto-save effect can
+  // call it without needing every form-state variable in its dep array.
+  handleSaveRef.current = handleSave
+
+  // Reset the auto-save indicator when the operator loads a different
+  // day/shift/machine — the new record isn't "dirty" or "saved" yet.
+  useEffect(() => {
+    setLastSavedAt(null)
+    setAutoSaveFailCount(0)
+  }, [date, shift, machineId])
+
+  // Debounced auto-save: 3s after the last change, persist silently.
+  // After 3 consecutive failures, stop retrying — the operator must
+  // intervene with a manual save (the indicator surfaces this state).
+  useEffect(() => {
+    if (!dirty || saving || autoSaveFailCount >= 3) return
+    const timer = setTimeout(async () => {
+      try {
+        await handleSaveRef.current({ silent: true })
+        setAutoSaveFailCount(0)
+      } catch (err) {
+        console.error('Auto-save failed', err)
+        setAutoSaveFailCount((c) => c + 1)
+      }
+    }, 3000)
+    return () => clearTimeout(timer)
+  }, [dirty, saving, autoSaveFailCount])
+
+  // When App.jsx successfully drains the offline queue (queueCount transitions
+  // from >0 to 0 while online), stamp lastSavedAt with the drain time so the
+  // indicator flips from "Syncing…" to "Saved HH:MM". Also mark every visible
+  // bag as _saved — the queue is empty so they've all landed in the DB, and
+  // the UI's "saved bag" styling (green border, confirm-on-remove) should
+  // reflect that. Re-fetch the WV batch list (all statuses — allocation
+  // needs the full picture) so totals/fill counts reflect rows that just
+  // synced. Finally, if a locally-allocated new batch is now persisted,
+  // swap the sentinel choice to its real UUID and clear wvNewBatch so the
+  // UI stops showing the "New batch: WV### — IBC#N" display.
+  const prevQueueCountRef = useRef(queueCount)
+  useEffect(() => {
+    if (prevQueueCountRef.current > 0 && queueCount === 0 && online) {
+      setLastSavedAt(new Date())
+      setBags((prev) => prev.map((b) => (b._saved ? b : { ...b, _saved: true })))
+      if (isCP500) {
+        supabase
+          .from('v_wood_vinegar_batches')
+          .select('*')
+          .order('batch_id')
+          .then(({ data }) => {
+            if (data) setWvBatches(data)
+          })
+      }
+      if (wvNewBatch) {
+        setWvBatchChoice(wvNewBatch.id)
+        setWvNewBatch(null)
+      }
+    }
+    prevQueueCountRef.current = queueCount
+  }, [queueCount, online, isCP500, wvNewBatch])
 
   const feedstockInput =
     feedstockStartWeight !== '' && feedstockEndWeight !== ''
@@ -558,9 +725,20 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
 
   return (
     <div className="pb-28 px-4 pt-4 max-w-2xl mx-auto">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-4 gap-3">
         <h1 className="text-2xl font-bold">Daily Production Sheet</h1>
-        {dirty && <span className="w-3 h-3 rounded-full bg-orange-400 flex-shrink-0" title="Unsaved changes" />}
+        {(() => {
+          const status = getSaveStatus({
+            saving, online, dirty, queueCount, autoSaveFailCount, lastSavedAt,
+          })
+          if (!status) return null
+          return (
+            <span className="text-xs flex items-center gap-1.5 flex-shrink-0">
+              <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${status.dot}`} />
+              <span className={status.text}>{status.label}</span>
+            </span>
+          )
+        })()}
       </div>
 
       {/* Header */}
@@ -860,17 +1038,29 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
             if (!v) setWvErrors({})
             markDirty()
           }}
-          openBatches={wvOpenBatches}
+          openBatches={wvBatches.filter((b) => b.status === 'open')}
           batchChoice={wvBatchChoice}
           onBatchChoiceChange={(v) => {
             setWvBatchChoice(v)
-            if (v !== NEW_WV_BATCH) setWvNewLocation('')
+            if (v === NEW_WV_BATCH) {
+              // Allocate canonical WV### + IBC#N synchronously from the
+              // in-memory list so the read-only display shows the values
+              // immediately on this same render — no async "Allocating…"
+              // flash. Pre-allocated UUID makes the batch upsertable on
+              // both offline and online save paths.
+              setWvNewBatch({
+                id: crypto.randomUUID(),
+                batch_id: allocateNextBatchId(wvBatches),
+                location: allocateNextIbcLocation(wvBatches),
+              })
+            } else {
+              setWvNewBatch(null)
+            }
             if (v === NEW_WV_BATCH || v === '') setWvCloseBatch(false)
             setWvErrors((e) => ({ ...e, batch: undefined }))
             markDirty()
           }}
-          newLocation={wvNewLocation}
-          onNewLocationChange={(v) => { setWvNewLocation(v); markDirty() }}
+          newBatch={wvNewBatch}
           volume={wvVolume}
           onVolumeChange={(v) => {
             setWvVolume(v)
@@ -894,7 +1084,11 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
         {saving ? 'Saving...' : existingId ? 'Update Run Sheet' : 'Save Run Sheet'}
       </button>
 
-      <SaveConfirmation show={showSaved} onDone={() => setShowSaved(false)} />
+      <SaveConfirmation
+        show={!!savedMessage}
+        message={savedMessage || 'Saved'}
+        onDone={() => setSavedMessage(null)}
+      />
     </div>
   )
 }

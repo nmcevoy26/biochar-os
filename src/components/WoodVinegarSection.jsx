@@ -19,8 +19,7 @@ export default function WoodVinegarSection({
   openBatches,
   batchChoice,
   onBatchChoiceChange,
-  newLocation,
-  onNewLocationChange,
+  newBatch,
   volume,
   onVolumeChange,
   notes,
@@ -75,14 +74,10 @@ export default function WoodVinegarSection({
 
           {isNew && (
             <div>
-              <label className="field-label">IBC location (optional)</label>
-              <input
-                type="text"
-                value={newLocation}
-                onChange={(e) => onNewLocationChange(e.target.value)}
-                placeholder="IBC #2"
-                className="input-field"
-              />
+              <label className="field-label">New batch</label>
+              <div className="input-field bg-gray-50 text-gray-700">
+                {newBatch ? `${newBatch.batch_id} — ${newBatch.location}` : 'Allocating…'}
+              </div>
             </div>
           )}
 
