@@ -43,6 +43,7 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
   const [avgExhaustTemp, setAvgExhaustTemp] = useState('')
   const [thermalOutput, setThermalOutput] = useState('')
   const [notes, setNotes] = useState('')
+  const [maintenanceNotes, setMaintenanceNotes] = useState('')
   const [bags, setBags] = useState([])
   const [nextBagNum, setNextBagNum] = useState(1)
   const [addingBag, setAddingBag] = useState(false)
@@ -146,6 +147,7 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
           setAvgExhaustTemp(data.avg_exhaust_temp_c ?? '')
           setThermalOutput(data.thermal_output_kwh ?? '')
           setNotes(data.notes || '')
+          setMaintenanceNotes(data.maintenance_notes || '')
           // Load feedstock links
           supabase
             .from('daily_production_feedstock')
@@ -199,6 +201,7 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
           setAvgExhaustTemp('')
           setThermalOutput('')
           setNotes('')
+          setMaintenanceNotes('')
           setSelectedFeedstock('')
           setBags([])
           resetWoodVinegar()
@@ -316,6 +319,7 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
         avg_exhaust_temp_c: avgExhaustTemp === '' ? null : Number(avgExhaustTemp),
         thermal_output_kwh: thermalOutput === '' ? null : Number(thermalOutput),
         notes: notes || null,
+        maintenance_notes: maintenanceNotes || null,
         updated_at: new Date().toISOString(),
       }
 
@@ -717,6 +721,16 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
           />
         </div>
       )}
+
+      {/* Maintenance Log */}
+      <h2 className="section-header">Maintenance Log</h2>
+      <textarea
+        value={maintenanceNotes}
+        onChange={(e) => { setMaintenanceNotes(e.target.value); markDirty() }}
+        rows={3}
+        placeholder="e.g. feed auger jammed at 10am; thermocouple erratic on CP1000"
+        className="input-field text-base"
+      />
 
       {/* Notes */}
       <h2 className="section-header">Notes</h2>
