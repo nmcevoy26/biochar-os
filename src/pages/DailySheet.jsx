@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase, MACHINES, detectShift, todayISO } from '../lib/supabase'
-import { enqueue } from '../lib/offline'
+import { enqueue, dequeueOps } from '../lib/offline'
 import ToggleGroup from '../components/ToggleGroup'
 import Toggle from '../components/Toggle'
 import NumberInput from '../components/NumberInput'
@@ -155,6 +155,17 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
     if (!isCP500) resetWoodVinegar()
   }, [isCP500])
 
+  // Pre-allocate the wood vinegar fill UUID the moment the operator toggles
+  // "collected" on, so subsequent autosaves (offline or online) target the
+  // same row instead of generating a fresh id each cycle. Without this every
+  // offline autosave would silently INSERT a duplicate fill — wood_vinegar_fills
+  // has no business-key unique constraint to catch dupes.
+  useEffect(() => {
+    if (isCP500 && wvCollected && !wvExistingFillId) {
+      setWvExistingFillId(crypto.randomUUID())
+    }
+  }, [isCP500, wvCollected, wvExistingFillId])
+
   // Load existing production record for this date/shift/machine
   useEffect(() => {
     if (!date || !shift || !machineId) return
@@ -221,7 +232,11 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             resetWoodVinegar()
           }
         } else {
-          setExistingId(null)
+          // No row in the DB for this date/shift/machine yet — pre-allocate a
+          // stable UUID so the form has an identity from the moment of editing.
+          // The first save (online or via queue drain) inserts this exact id;
+          // every subsequent save upserts onto the same row.
+          setExistingId(crypto.randomUUID())
           setOperatorName(loggedInOperator?.name || '')
           setFeedstockStartWeight('')
           setFeedstockEndWeight('')
@@ -276,7 +291,9 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
     }
     const unsavedCount = bags.filter((b) => !b._saved).length
     const bagId = 'GRIP' + String(baseNum + unsavedCount).padStart(5, '0')
-    setBags((prev) => [...prev, { ...EMPTY_BAG, bulk_bag_id: bagId }])
+    // Pre-allocate the bag's UUID client-side so every save (offline or
+    // online) targets the same row, no matter how many times autosave fires.
+    setBags((prev) => [...prev, { ...EMPTY_BAG, id: crypto.randomUUID(), bulk_bag_id: bagId }])
     markDirty()
     setAddingBag(false)
     // Scroll to bottom after render
@@ -300,7 +317,19 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
     setBags((prev) => prev.filter((_, i) => i !== index))
     markDirty()
 
-    // Delete from Supabase in background if already persisted
+    // Drop any pending queued op for this bag — covers the "added offline then
+    // removed before sync" case so a stale upsert can't recreate the bag on
+    // the next drain.
+    if (bag.id) {
+      const dropped = dequeueOps(
+        (op) =>
+          op.table === 'bulk_bags' &&
+          (op.data?.id === bag.id || op.match?.id === bag.id),
+      )
+      if (dropped > 0) onQueueChange?.()
+    }
+
+    // Delete from Supabase in background if already persisted to the DB
     if (bag._saved && bag.id) {
       supabase
         .from('bulk_bags')
@@ -361,60 +390,58 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
       }
 
       if (!online) {
+        // Every offline write is an upsert keyed on the client-allocated id.
+        // Coalescing in enqueue keeps the queue at one op per logical record
+        // even when autosave fires repeatedly, so replay on reconnect is
+        // idempotent and the unique constraint on (machine_id, date, shift)
+        // never trips.
         enqueue({
           table: 'daily_production',
-          type: existingId ? 'update' : 'insert',
-          data: existingId ? productionData : { ...productionData, id: crypto.randomUUID() },
-          match: existingId ? { id: existingId } : undefined,
+          type: 'upsert',
+          data: { ...productionData, id: existingId },
+          onConflict: 'id',
         })
         for (const bag of bags) {
-          if (!bag._saved) {
-            enqueue({
-              table: 'bulk_bags',
-              type: 'insert',
-              data: {
-                bulk_bag_id: bag.bulk_bag_id,
-                fill_date: date,
-                shift,
-                machine_id: machineId,
-                operator_id: loggedInOperator?.id || null,
-                wet_weight_kg: bag.wet_weight_kg === '' ? null : Number(bag.wet_weight_kg),
-                moisture_pct: bag.moisture_pct === '' ? null : Number(bag.moisture_pct),
-                volume_m3: bag.volume_m3 === '' ? null : Number(bag.volume_m3),
-                subsample_taken: bag.subsample_taken || false,
-              },
-            })
-          }
+          enqueue({
+            table: 'bulk_bags',
+            type: 'upsert',
+            data: {
+              id: bag.id,
+              bulk_bag_id: bag.bulk_bag_id,
+              fill_date: date,
+              shift,
+              machine_id: machineId,
+              production_id: existingId,
+              operator_id: loggedInOperator?.id || null,
+              wet_weight_kg: bag.wet_weight_kg === '' ? null : Number(bag.wet_weight_kg),
+              moisture_pct: bag.moisture_pct === '' ? null : Number(bag.moisture_pct),
+              volume_m3: bag.volume_m3 === '' ? null : Number(bag.volume_m3),
+              subsample_taken: bag.subsample_taken || false,
+              updated_at: new Date().toISOString(),
+            },
+            onConflict: 'id',
+          })
         }
-        // Wood vinegar offline: only existing batch (new-batch UX is gated to online)
-        if (isCP500 && wvCollected && wvBatchChoice && wvBatchChoice !== NEW_WV_BATCH && existingId) {
-          if (wvExistingFillId) {
-            enqueue({
-              table: 'wood_vinegar_fills',
-              type: 'update',
-              data: {
-                batch_id: wvBatchChoice,
-                volume_liters: Number(wvVolume),
-                notes: wvNotes || null,
-                updated_at: new Date().toISOString(),
-              },
-              match: { id: wvExistingFillId },
-            })
-          } else {
-            enqueue({
-              table: 'wood_vinegar_fills',
-              type: 'insert',
-              data: {
-                id: crypto.randomUUID(),
-                batch_id: wvBatchChoice,
-                production_id: existingId,
-                operator_id: loggedInOperator?.id || null,
-                fill_date: date,
-                volume_liters: Number(wvVolume),
-                notes: wvNotes || null,
-              },
-            })
-          }
+        // Wood vinegar offline: only an existing batch (new-batch UX still
+        // needs network for the sequential WV### id). wvExistingFillId is
+        // pre-allocated when wvCollected toggles on, so upsert is safe even
+        // on the first save.
+        if (isCP500 && wvCollected && wvBatchChoice && wvBatchChoice !== NEW_WV_BATCH) {
+          enqueue({
+            table: 'wood_vinegar_fills',
+            type: 'upsert',
+            data: {
+              id: wvExistingFillId,
+              batch_id: wvBatchChoice,
+              production_id: existingId,
+              operator_id: loggedInOperator?.id || null,
+              fill_date: date,
+              volume_liters: Number(wvVolume),
+              notes: wvNotes || null,
+              updated_at: new Date().toISOString(),
+            },
+            onConflict: 'id',
+          })
           if (wvCloseBatch) {
             enqueue({
               table: 'wood_vinegar_batches',
@@ -435,23 +462,15 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         return
       }
 
-      let productionId = existingId
-
-      if (existingId) {
+      // With existingId pre-allocated by the load effect, daily_production
+      // saves are unconditional upserts on the local UUID. First save inserts
+      // the row; every subsequent save updates it.
+      const productionId = existingId
+      {
         const { error } = await supabase
           .from('daily_production')
-          .update(productionData)
-          .eq('id', existingId)
+          .upsert({ ...productionData, id: productionId }, { onConflict: 'id' })
         if (error) throw error
-      } else {
-        const { data, error } = await supabase
-          .from('daily_production')
-          .insert(productionData)
-          .select('id')
-          .single()
-        if (error) throw error
-        productionId = data.id
-        setExistingId(data.id)
       }
 
       // Update feedstock link
@@ -463,10 +482,12 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         })
       }
 
-      // Save bags
+      // Save bags. addBag pre-allocates bag.id so every bag is upsertable on
+      // its UUID — no branch on whether it exists in the DB yet.
       for (let i = 0; i < bags.length; i++) {
         const bag = bags[i]
         const bagData = {
+          id: bag.id,
           bulk_bag_id: bag.bulk_bag_id,
           fill_date: date,
           shift,
@@ -479,12 +500,10 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           subsample_taken: bag.subsample_taken || false,
           updated_at: new Date().toISOString(),
         }
-        if (bag.id) {
-          await supabase.from('bulk_bags').update(bagData).eq('id', bag.id)
-        } else {
-          const { data } = await supabase.from('bulk_bags').insert(bagData).select('id').single()
-          if (data) bag.id = data.id
-        }
+        const { error } = await supabase
+          .from('bulk_bags')
+          .upsert(bagData, { onConflict: 'id' })
+        if (error) throw error
         bag._saved = true
         setFlashIdx(i)
       }
@@ -519,7 +538,11 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           }
         }
 
+        // wvExistingFillId is pre-allocated when wvCollected toggles on, so
+        // we always have a stable id to upsert against. No more risk of
+        // accidental duplicate fills on autosave.
         const fillPayload = {
+          id: wvExistingFillId,
           batch_id: batchUuid,
           production_id: productionId,
           operator_id: loggedInOperator?.id || null,
@@ -529,21 +552,10 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           updated_at: new Date().toISOString(),
         }
 
-        if (wvExistingFillId) {
-          const { error } = await supabase
-            .from('wood_vinegar_fills')
-            .update(fillPayload)
-            .eq('id', wvExistingFillId)
-          if (error) throw error
-        } else {
-          const { data: fillRow, error } = await supabase
-            .from('wood_vinegar_fills')
-            .insert(fillPayload)
-            .select('id')
-            .single()
-          if (error) throw error
-          setWvExistingFillId(fillRow.id)
-        }
+        const { error: fillErr } = await supabase
+          .from('wood_vinegar_fills')
+          .upsert(fillPayload, { onConflict: 'id' })
+        if (fillErr) throw fillErr
 
         // Reflect any locally-known batch_id swap (new-batch -> uuid)
         if (wvBatchChoice === NEW_WV_BATCH) setWvBatchChoice(batchUuid)
@@ -629,11 +641,15 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
 
   // When App.jsx successfully drains the offline queue (queueCount transitions
   // from >0 to 0 while online), stamp lastSavedAt with the drain time so the
-  // indicator flips from "Syncing…" to "Saved HH:MM".
+  // indicator flips from "Syncing…" to "Saved HH:MM". Also mark every visible
+  // bag as _saved — the queue is empty so they've all landed in the DB, and
+  // the UI's "saved bag" styling (green border, confirm-on-remove) should
+  // reflect that.
   const prevQueueCountRef = useRef(queueCount)
   useEffect(() => {
     if (prevQueueCountRef.current > 0 && queueCount === 0 && online) {
       setLastSavedAt(new Date())
+      setBags((prev) => prev.map((b) => (b._saved ? b : { ...b, _saved: true })))
     }
     prevQueueCountRef.current = queueCount
   }, [queueCount, online])
