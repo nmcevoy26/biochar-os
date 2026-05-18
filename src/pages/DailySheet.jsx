@@ -652,15 +652,28 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   // indicator flips from "Syncing…" to "Saved HH:MM". Also mark every visible
   // bag as _saved — the queue is empty so they've all landed in the DB, and
   // the UI's "saved bag" styling (green border, confirm-on-remove) should
-  // reflect that.
+  // reflect that. Finally, re-fetch the WV batch dropdown so totals/fill
+  // counts reflect any wood_vinegar_fills rows that just synced — without
+  // this the dropdown keeps showing the pre-sync "0L (0 fills)" snapshot
+  // and the operator may add a duplicate fill thinking the first failed.
   const prevQueueCountRef = useRef(queueCount)
   useEffect(() => {
     if (prevQueueCountRef.current > 0 && queueCount === 0 && online) {
       setLastSavedAt(new Date())
       setBags((prev) => prev.map((b) => (b._saved ? b : { ...b, _saved: true })))
+      if (isCP500) {
+        supabase
+          .from('v_wood_vinegar_batches')
+          .select('*')
+          .eq('status', 'open')
+          .order('batch_id')
+          .then(({ data }) => {
+            if (data) setWvOpenBatches(data)
+          })
+      }
     }
     prevQueueCountRef.current = queueCount
-  }, [queueCount, online])
+  }, [queueCount, online, isCP500])
 
   const feedstockInput =
     feedstockStartWeight !== '' && feedstockEndWeight !== ''
