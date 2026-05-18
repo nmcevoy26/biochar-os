@@ -44,7 +44,8 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
   const [thermalOutput, setThermalOutput] = useState('')
   const [notes, setNotes] = useState('')
   const [bags, setBags] = useState([])
-  const [nextBagNum, setNextBagNum] = useState(177)
+  const [nextBagNum, setNextBagNum] = useState(1)
+  const [addingBag, setAddingBag] = useState(false)
   const [saving, setSaving] = useState(false)
   const [showSaved, setShowSaved] = useState(false)
   const [existingId, setExistingId] = useState(null)
@@ -220,11 +221,29 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
     markDirty()
   }
 
-  function addBag() {
+  async function addBag() {
+    if (addingBag) return
+    setAddingBag(true)
+    // Re-query the DB at click time so concurrent fills from other devices
+    // (or sessions left open across shifts) don't produce stale bag numbers.
+    let baseNum = nextBagNum
+    if (online) {
+      const { data, error } = await supabase
+        .from('bulk_bags')
+        .select('bulk_bag_id')
+        .order('bulk_bag_id', { ascending: false })
+        .limit(1)
+      if (!error && data?.[0]) {
+        const n = parseInt(data[0].bulk_bag_id.replace(/\D/g, ''), 10)
+        if (!isNaN(n)) baseNum = n + 1
+      }
+      setNextBagNum(baseNum)
+    }
     const unsavedCount = bags.filter((b) => !b._saved).length
-    const bagId = 'GRIP' + String(nextBagNum + unsavedCount).padStart(4, '0')
+    const bagId = 'GRIP' + String(baseNum + unsavedCount).padStart(5, '0')
     setBags((prev) => [...prev, { ...EMPTY_BAG, bulk_bag_id: bagId }])
     markDirty()
+    setAddingBag(false)
     // Scroll to bottom after render
     setTimeout(() => window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }), 100)
   }
@@ -810,9 +829,10 @@ export default function DailySheet({ online, operator: loggedInOperator }) {
         <button
           type="button"
           onClick={addBag}
-          className="w-full py-4 border-2 border-dashed border-gray-400 rounded-2xl text-lg font-bold text-gray-500 active:bg-gray-100"
+          disabled={addingBag}
+          className="w-full py-4 border-2 border-dashed border-gray-400 rounded-2xl text-lg font-bold text-gray-500 active:bg-gray-100 disabled:opacity-50"
         >
-          + Add Bag
+          {addingBag ? 'Adding...' : '+ Add Bag'}
         </button>
       </div>
 
