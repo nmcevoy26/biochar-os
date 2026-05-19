@@ -24,6 +24,7 @@ export default function WoodVinegarSection({
   onVolumeChange,
   notes,
   onNotesChange,
+  onTextBlur,
   closeBatch,
   onCloseBatchChange,
   errors,
@@ -100,6 +101,7 @@ export default function WoodVinegarSection({
             <textarea
               value={notes}
               onChange={(e) => onNotesChange(e.target.value)}
+              onBlur={onTextBlur}
               rows={2}
               placeholder="Colour, smell, anything notable..."
               className="input-field text-base"

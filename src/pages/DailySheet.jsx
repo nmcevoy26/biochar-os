@@ -97,6 +97,13 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   const [savedMessage, setSavedMessage] = useState(null)
   const [existingId, setExistingId] = useState(null)
   const [dirty, setDirty] = useState(false)
+  // dirtyTick bumps on every edit so the autosave effect's debounce timer
+  // resets per keystroke. Using `dirty` as the dep doesn't work — once it's
+  // true, subsequent setDirty(true) calls don't re-run the effect, so the
+  // timer never resets and save fires while the operator is still typing
+  // (the original mid-type erase race). Keep `dirty` boolean for the UI
+  // status indicator; only use dirtyTick to drive the timer.
+  const [dirtyTick, setDirtyTick] = useState(0)
   const [flashIdx, setFlashIdx] = useState(null)
   const [readingsOpen, setReadingsOpen] = useState(false)
   const [lastSavedAt, setLastSavedAt] = useState(null)
@@ -286,6 +293,23 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
 
   function markDirty() {
     setDirty(true)
+    setDirtyTick((t) => t + 1)
+  }
+
+  // Save-on-blur for text fields. Free-text inputs (operator, maintenance
+  // notes, notes, bag IDs, WV notes) don't ride the 5s debounce — they
+  // save the instant the operator leaves the field, so autosave never
+  // fires while the operator is still typing. Gated on `dirty` so blur
+  // events on untouched fields are no-ops; gated on `saving` and
+  // autoSaveFailCount to mirror the autosave effect's guards.
+  function handleTextBlur() {
+    if (!dirty || saving || autoSaveFailCount >= 3) return
+    handleSaveRef.current({ silent: true })
+      .then(() => setAutoSaveFailCount(0))
+      .catch((err) => {
+        console.error('Blur save failed', err)
+        setAutoSaveFailCount((c) => c + 1)
+      })
   }
 
   function selectFeedstock(id) {
@@ -669,9 +693,14 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
     setAutoSaveFailCount(0)
   }, [date, shift, machineId])
 
-  // Debounced auto-save: 3s after the last change, persist silently.
-  // After 3 consecutive failures, stop retrying — the operator must
-  // intervene with a manual save (the indicator surfaces this state).
+  // Debounced auto-save: 5s after the last edit, persist silently.
+  // Keyed on dirtyTick so the timer truly resets per keystroke — using
+  // `dirty` as the dep would only fire once per save cycle regardless of
+  // how long the operator kept typing. Text fields also save on blur
+  // (see handleTextBlur), so the 5s wait mainly covers structured fields
+  // (numbers, toggles, dropdowns, bag adds). After 3 consecutive failures,
+  // stop retrying — the operator must intervene with a manual save (the
+  // indicator surfaces this state).
   useEffect(() => {
     if (!dirty || saving || autoSaveFailCount >= 3) return
     const timer = setTimeout(async () => {
@@ -682,9 +711,9 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         console.error('Auto-save failed', err)
         setAutoSaveFailCount((c) => c + 1)
       }
-    }, 3000)
+    }, 5000)
     return () => clearTimeout(timer)
-  }, [dirty, saving, autoSaveFailCount])
+  }, [dirty, dirtyTick, saving, autoSaveFailCount])
 
   // When App.jsx successfully drains the offline queue (queueCount transitions
   // from >0 to 0 while online), stamp lastSavedAt with the drain time so the
@@ -776,6 +805,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             type="text"
             value={operatorName}
             onChange={(e) => { setOperatorName(e.target.value); markDirty() }}
+            onBlur={handleTextBlur}
             placeholder="Name(s)"
             className="input-field"
           />
@@ -905,6 +935,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
       <textarea
         value={maintenanceNotes}
         onChange={(e) => { setMaintenanceNotes(e.target.value); markDirty() }}
+        onBlur={handleTextBlur}
         rows={3}
         placeholder="e.g. feed auger jammed at 10am; thermocouple erratic on CP1000"
         className="input-field text-base"
@@ -915,6 +946,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
       <textarea
         value={notes}
         onChange={(e) => { setNotes(e.target.value); markDirty() }}
+        onBlur={handleTextBlur}
         rows={3}
         placeholder="Any comments..."
         className="input-field text-base"
@@ -964,6 +996,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
                   type="text"
                   value={bag.bulk_bag_id}
                   onChange={(e) => updateBag(i, 'bulk_bag_id', e.target.value)}
+                  onBlur={handleTextBlur}
                   placeholder="GRIP0177"
                   className="input-field"
                 />
@@ -1069,6 +1102,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           }}
           notes={wvNotes}
           onNotesChange={(v) => { setWvNotes(v); markDirty() }}
+          onTextBlur={handleTextBlur}
           closeBatch={wvCloseBatch}
           onCloseBatchChange={(v) => { setWvCloseBatch(v); markDirty() }}
           errors={wvErrors}
