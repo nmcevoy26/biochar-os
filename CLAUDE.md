@@ -159,3 +159,17 @@ src/
 - Buttons use `btn-primary` utility class
 - Toggle switches: inline `Toggle` component in WeeklySample (flexbox pill + translateX knob)
 - Segmented controls: `ToggleGroup` component
+
+## Lessons Learned & Gotchas
+
+### Offline persistence
+
+**Pre-allocated UUIDs + upsert + queue coalescing is the right offline pattern.** When operator state needs to persist offline, allocate the record's UUID client-side before any save, use upsert (not insert) on the queue, and coalesce queue ops by `data.id` to prevent duplicates. This eliminates 409 conflicts on reconnect-drain. Modern industry standard (Notion, Linear, Asana pattern).
+
+### Autosave
+
+**Don't use a boolean dirty flag as the autosave effect dep.** React bails on the rerender when setting `dirty=true` on already-true state, so the timer never resets per keystroke. Use a `dirtyTick` counter that bumps on every edit instead — that's the real per-keystroke debounce. Save-on-blur for free-text fields prevents mid-type erase races (industry standard from Google Forms, Notion).
+
+### Phase 5 RLS regressions
+
+Phase 5's dashboard RLS overhaul broke biochar-os twice (WV access, missing DELETE policies). Pattern: when the dashboard tightens RLS on a table that biochar-os also writes to, revert to permissive `qual=true` on operator-write paths. Tier 0 RLS overhaul will properly restrict both contexts.
