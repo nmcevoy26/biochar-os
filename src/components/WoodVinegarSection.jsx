@@ -28,6 +28,8 @@ export default function WoodVinegarSection({
   closeBatch,
   onCloseBatchChange,
   errors,
+  persistedFill,
+  onRemoveFill,
 }) {
   const isNew = batchChoice === NEW_BATCH
   const newDisabledOffline = !online
@@ -44,6 +46,24 @@ export default function WoodVinegarSection({
 
       {collected && (
         <div className="space-y-4 mt-4">
+          {persistedFill && (
+            <div>
+              <label className="field-label">Saved fill</label>
+              <div className="flex items-center justify-between border-2 border-green-300 bg-green-50/30 rounded-2xl p-3">
+                <span className="font-medium">
+                  {persistedFill.batchLabel} — {persistedFill.volumeLiters}L
+                </span>
+                <button
+                  type="button"
+                  onClick={onRemoveFill}
+                  className="text-red-400 text-sm font-semibold py-1 px-2"
+                >
+                  ✕ Remove
+                </button>
+              </div>
+            </div>
+          )}
+
           <div>
             <label className="field-label">Batch</label>
             <select

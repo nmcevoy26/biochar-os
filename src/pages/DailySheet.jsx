@@ -128,6 +128,13 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   const [wvNotes, setWvNotes] = useState('')
   const [wvCloseBatch, setWvCloseBatch] = useState(false)
   const [wvExistingFillId, setWvExistingFillId] = useState(null)
+  // wvFillPersisted = "the current wvExistingFillId corresponds to a row that
+  // exists in the DB (or is queued to be written)." Gates whether
+  // removeWvFill actually issues a DELETE vs. just resetting local state —
+  // mirrors the `bag._saved` pattern. Set true on load when an existing fill
+  // is found, and after every successful save/enqueue of the fill. Cleared
+  // by resetWoodVinegar and removeWvFill.
+  const [wvFillPersisted, setWvFillPersisted] = useState(false)
   const [wvErrors, setWvErrors] = useState({})
 
   const machineId = MACHINES[machineKey]
@@ -141,7 +148,60 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
     setWvNotes('')
     setWvCloseBatch(false)
     setWvExistingFillId(null)
+    setWvFillPersisted(false)
     setWvErrors({})
+  }
+
+  // Explicit delete for the current WV fill. Two UI affordances call this:
+  // the "collected" toggle going OFF (when a fill was persisted), and the
+  // ✕ Remove button on the saved-fill list. Mirrors removeBag: optimistic UI
+  // clear, drop any pending queued upsert for the same id, then DELETE
+  // online (or enqueue DELETE offline). The DB CHECK + RLS + GRANT for anon
+  // were configured in migrations
+  // wood_vinegar_fills_operator_app_delete +
+  // wood_vinegar_fills_grant_delete_to_anon.
+  async function removeWvFill() {
+    const fillId = wvExistingFillId
+    const wasPersisted = wvFillPersisted
+
+    if (fillId) {
+      const dropped = dequeueOps(
+        (op) =>
+          op.table === 'wood_vinegar_fills' &&
+          (op.data?.id === fillId || op.match?.id === fillId),
+      )
+      if (dropped > 0) onQueueChange?.()
+    }
+
+    resetWoodVinegar()
+
+    if (!wasPersisted || !fillId) return
+
+    if (online) {
+      const { error } = await supabase
+        .from('wood_vinegar_fills')
+        .delete()
+        .eq('id', fillId)
+      if (error) {
+        // UI has already cleared optimistically but the row may still be in
+        // the DB. Tell the operator explicitly — a bare error.message would
+        // imply the local clear meant the delete succeeded. Refresh batches
+        // so the dropdown reflects current DB truth either way.
+        alert('Delete failed — the fill may still be recorded. Refresh to confirm.\n\n' + error.message)
+      }
+      const { data: refreshed } = await supabase
+        .from('v_wood_vinegar_batches')
+        .select('*')
+        .order('batch_id')
+      if (refreshed) setWvBatches(refreshed)
+    } else {
+      enqueue({
+        table: 'wood_vinegar_fills',
+        type: 'delete',
+        match: { id: fillId },
+      })
+      onQueueChange?.()
+    }
   }
 
   // Load feedstock sources
@@ -260,6 +320,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
                   setWvVolume(f.volume_liters ?? '')
                   setWvNotes(f.notes || '')
                   setWvExistingFillId(f.id)
+                  setWvFillPersisted(true)
                 } else {
                   resetWoodVinegar()
                 }
@@ -549,6 +610,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             },
             onConflict: 'id',
           })
+          setWvFillPersisted(true)
           if (wvCloseBatch && !isNewBatch) {
             enqueue({
               table: 'wood_vinegar_batches',
@@ -661,6 +723,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           .from('wood_vinegar_fills')
           .upsert(fillPayload, { onConflict: 'id' })
         if (fillErr) throw fillErr
+        setWvFillPersisted(true)
 
         // Reflect the new-batch promotion locally: the sentinel choice
         // becomes the real UUID, and the staging wvNewBatch is cleared
@@ -1105,7 +1168,28 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         <WoodVinegarSection
           online={online}
           collected={wvCollected}
+          persistedFill={
+            wvFillPersisted && wvExistingFillId
+              ? {
+                  batchLabel: (() => {
+                    const b = wvBatches.find((x) => x.id === wvBatchChoice)
+                    if (!b) return wvBatchChoice === '' ? 'Batch unknown' : '—'
+                    return b.location ? `${b.batch_id} — ${b.location}` : b.batch_id
+                  })(),
+                  volumeLiters: wvVolume,
+                }
+              : null
+          }
+          onRemoveFill={removeWvFill}
           onCollectedChange={(v) => {
+            // Toggle OFF when a fill is persisted = explicit delete intent.
+            // removeWvFill handles state reset + DB delete + queue ops. It's
+            // immediate (not deferred to next save) so navigating away can't
+            // leave a phantom fill behind.
+            if (!v && wvCollected && wvFillPersisted) {
+              removeWvFill()
+              return
+            }
             setWvCollected(v)
             if (!v) setWvErrors({})
             markDirty()
