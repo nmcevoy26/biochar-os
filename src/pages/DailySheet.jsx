@@ -9,6 +9,20 @@ import WoodVinegarSection from '../components/WoodVinegarSection'
 
 const NEW_WV_BATCH = '__new__'
 
+// Fixed reason set for downtime_reason. Stored as plain text in the DB —
+// changing this list does not require a migration. Order is the order
+// operators see in the dropdown.
+const DOWNTIME_REASONS = [
+  'Planned maintenance',
+  'Mechanical failure / breakdown',
+  'Feed jam / blockage',
+  'No feedstock available',
+  'Weather / environmental',
+  'Power / utility outage',
+  'Operator unavailable',
+  'Other',
+]
+
 const EMPTY_BAG = {
   bulk_bag_id: '',
   wet_weight_kg: '',
@@ -83,6 +97,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   const [feedstockEndWeight, setFeedstockEndWeight] = useState('')
   const [feedstockMoisture, setFeedstockMoisture] = useState('')
   const [runtimeHours, setRuntimeHours] = useState('')
+  const [downtimeHours, setDowntimeHours] = useState('')
+  const [downtimeReason, setDowntimeReason] = useState('')
   const [dieselLitres, setDieselLitres] = useState('')
   const [avgPyroTemp, setAvgPyroTemp] = useState('')
   const [maxPyroTemp, setMaxPyroTemp] = useState('')
@@ -280,6 +296,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           setFeedstockEndWeight(data.feedstock_end_weight_t ?? '')
           setFeedstockMoisture(data.feedstock_moisture_pct ?? '')
           setRuntimeHours(data.runtime_hours ?? '')
+          setDowntimeHours(data.downtime_hours ?? '')
+          setDowntimeReason(data.downtime_reason ?? '')
           setDieselLitres(data.diesel_litres ?? '')
           setAvgPyroTemp(data.avg_pyrolysis_temp_c ?? '')
           setMaxPyroTemp(data.max_pyrolysis_temp_c ?? '')
@@ -342,6 +360,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           setFeedstockEndWeight('')
           setFeedstockMoisture('')
           setRuntimeHours('')
+          setDowntimeHours('')
+          setDowntimeReason('')
           setDieselLitres('')
           setAvgPyroTemp('')
           setMaxPyroTemp('')
@@ -486,6 +506,12 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
     if (feedstockMoisture !== '') return true
     if (selectedFeedstock !== '') return true
     if (bags.length > 0) return true
+    // Downtime is meaningful production data — a down-shift with no biochar
+    // output is exactly when the downtime fields ARE the meaningful record.
+    // Without these triggers, an operator who only logs downtime would have
+    // no daily_production row created and their entry would silently no-save.
+    if (downtimeHours !== '') return true
+    if (downtimeReason !== '') return true
     if (isCP500 && wvCollected && wvBatchChoice !== '' && wvVolume !== '' && Number(wvVolume) > 0) return true
     return false
   }
@@ -529,6 +555,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         feedstock_end_weight_t: feedstockEndWeight === '' ? null : Number(feedstockEndWeight),
         feedstock_moisture_pct: feedstockMoisture === '' ? null : Number(feedstockMoisture),
         runtime_hours: runtimeHours === '' ? null : Number(runtimeHours),
+        downtime_hours: downtimeHours === '' ? null : Number(downtimeHours),
+        downtime_reason: downtimeReason || null,
         diesel_litres: dieselLitres === '' ? null : Number(dieselLitres),
         avg_pyrolysis_temp_c: avgPyroTemp === '' ? null : Number(avgPyroTemp),
         max_pyrolysis_temp_c: maxPyroTemp === '' ? null : Number(maxPyroTemp),
@@ -962,6 +990,46 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         </div>
       </div>
 
+      {/* Operating Window — runtime + downtime live here together (visible by
+          default). Runtime was previously buried inside the Machine Readings
+          collapsible; promoted out so downtime (which pairs conceptually with
+          runtime) isn't hidden either. */}
+      <h2 className="section-header">Operating Window</h2>
+      <div className="grid grid-cols-2 gap-4">
+        <NumberInput
+          label="Runtime"
+          value={runtimeHours}
+          onChange={(v) => { setRuntimeHours(v); markDirty() }}
+          unit="hrs"
+          step={1}
+          min={0}
+        />
+        <NumberInput
+          label="Downtime"
+          value={downtimeHours}
+          onChange={(v) => { setDowntimeHours(v); markDirty() }}
+          unit="hrs"
+          step={0.5}
+          min={0}
+        />
+      </div>
+      <div className="mt-4">
+        <label className="field-label">Downtime reason</label>
+        <select
+          value={downtimeReason}
+          onChange={(e) => { setDowntimeReason(e.target.value); markDirty() }}
+          className={`input-field ${downtimeReason === '' ? '!text-gray-400 !font-normal' : ''}`}
+        >
+          <option value="">Select reason...</option>
+          {DOWNTIME_REASONS.map((r) => (
+            <option key={r} value={r}>{r}</option>
+          ))}
+        </select>
+        {downtimeHours !== '' && Number(downtimeHours) > 0 && downtimeReason === '' && (
+          <p className="text-sm text-gray-500 mt-1">Pick a reason for the downtime.</p>
+        )}
+      </div>
+
       {/* Machine Readings (collapsible) */}
       <button
         type="button"
@@ -981,14 +1049,6 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
       </button>
       {readingsOpen && (
         <div className="grid grid-cols-2 gap-4">
-          <NumberInput
-            label="Runtime"
-            value={runtimeHours}
-            onChange={(v) => { setRuntimeHours(v); markDirty() }}
-            unit="hrs"
-            step={1}
-            min={0}
-          />
           <NumberInput
             label="Diesel"
             value={dieselLitres}
