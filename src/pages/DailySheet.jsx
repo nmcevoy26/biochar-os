@@ -96,6 +96,12 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   const [saving, setSaving] = useState(false)
   const [savedMessage, setSavedMessage] = useState(null)
   const [existingId, setExistingId] = useState(null)
+  // isPersisted = "this daily_production row has been (or is queued to be)
+  // written to the DB." Drives the phantom-row gate in handleSave: until
+  // meaningful production data is entered, we don't INSERT just because the
+  // sheet was opened and a field was touched. Set true when load finds an
+  // existing row, or after the first successful save/enqueue this session.
+  const [isPersisted, setIsPersisted] = useState(false)
   const [dirty, setDirty] = useState(false)
   // dirtyTick bumps on every edit so the autosave effect's debounce timer
   // resets per keystroke. Using `dirty` as the dep doesn't work — once it's
@@ -208,6 +214,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
       .then(({ data }) => {
         if (data) {
           setExistingId(data.id)
+          setIsPersisted(true)
           setOperatorName(data.operator || loggedInOperator?.name || '')
           setFeedstockStartWeight(data.feedstock_start_weight_t ?? '')
           setFeedstockEndWeight(data.feedstock_end_weight_t ?? '')
@@ -264,8 +271,11 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           // No row in the DB for this date/shift/machine yet — pre-allocate a
           // stable UUID so the form has an identity from the moment of editing.
           // The first save (online or via queue drain) inserts this exact id;
-          // every subsequent save upserts onto the same row.
+          // every subsequent save upserts onto the same row. isPersisted stays
+          // false until the operator enters meaningful data and the first save
+          // fires — that's the phantom-row gate in handleSave.
           setExistingId(crypto.randomUUID())
+          setIsPersisted(false)
           setOperatorName(loggedInOperator?.name || '')
           setFeedstockStartWeight('')
           setFeedstockEndWeight('')
@@ -403,6 +413,22 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
     return errs
   }
 
+  // Phantom-row gate. Returns true when the form holds production-relevant
+  // data worth persisting a daily_production row for. Used by handleSave to
+  // suppress the first INSERT until the operator has actually started a run
+  // — opening the sheet, picking a shift, or typing a name shouldn't write.
+  // Once a row is persisted (isPersisted=true) this gate no longer applies:
+  // subsequent edits, including clearing the form, save through normally.
+  function hasMeaningfulData() {
+    if (feedstockStartWeight !== '') return true
+    if (feedstockEndWeight !== '') return true
+    if (feedstockMoisture !== '') return true
+    if (selectedFeedstock !== '') return true
+    if (bags.length > 0) return true
+    if (isCP500 && wvCollected && wvBatchChoice !== '' && wvVolume !== '' && Number(wvVolume) > 0) return true
+    return false
+  }
+
   async function handleSave({ silent = false } = {}) {
     const wvErrs = validateWoodVinegar()
     const wvValid = Object.keys(wvErrs).length === 0
@@ -410,6 +436,17 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
       // Manual save with incomplete WV — surface the errors and abort
       // so the operator can fix them.
       setWvErrors(wvErrs)
+      return
+    }
+
+    // Phantom-row gate: if the row hasn't been persisted yet AND no
+    // meaningful data has been entered, skip the save entirely. setDirty(false)
+    // settles the autosave cycle via the effect's cleanup (the still-pending
+    // 5s timer, if any, gets cleared when the dep changes). The operator can
+    // type their name, toggle shift/machine, and close the app without ever
+    // creating an empty daily_production row.
+    if (!isPersisted && !hasMeaningfulData()) {
+      setDirty(false)
       return
     }
     // Silent autosave falls through with wvValid=false, skipping just
@@ -527,6 +564,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         // dot appears without waiting for the 5s poll.
         if (!silent) setSavedMessage('Saved locally — will sync')
         setDirty(false)
+        setIsPersisted(true)
         onQueueChange?.()
         setSaving(false)
         return
@@ -666,6 +704,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
 
       setBags([...bags])
       setDirty(false)
+      setIsPersisted(true)
       setLastSavedAt(new Date())
       if (!silent) {
         setSavedMessage('Saved')
