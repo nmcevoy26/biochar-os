@@ -6,6 +6,7 @@ import Toggle from '../components/Toggle'
 import NumberInput from '../components/NumberInput'
 import SaveConfirmation from '../components/SaveConfirmation'
 import WoodVinegarSection from '../components/WoodVinegarSection'
+import ReasonModal from '../components/ReasonModal'
 import { validateDailySheet, validateBags, hasHardIssue } from '../lib/dailySheetValidation'
 
 const NEW_WV_BATCH = '__new__'
@@ -132,6 +133,14 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   const [lastSavedAt, setLastSavedAt] = useState(null)
   const [autoSaveFailCount, setAutoSaveFailCount] = useState(0)
   const handleSaveRef = useRef(null)
+
+  // Correction mode: editing a PAST run's consequence fields (moisture/feedstock)
+  // requires an explicit reasoned save. correctionReason holds the reason for the
+  // current correction; initialConsequenceRef snapshots the loaded consequence
+  // values so we can tell when one actually changed.
+  const [correctionReason, setCorrectionReason] = useState('')
+  const [reasonModalOpen, setReasonModalOpen] = useState(false)
+  const initialConsequenceRef = useRef({ moisture: '', start: '', end: '' })
 
   // Wood vinegar (CP500 only). wvBatches holds ALL batches (any status) so
   // location allocation considers closed/dispatched IBC numbers and avoids
@@ -296,6 +305,11 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           setFeedstockStartWeight(data.feedstock_start_weight_t ?? '')
           setFeedstockEndWeight(data.feedstock_end_weight_t ?? '')
           setFeedstockMoisture(data.feedstock_moisture_pct ?? '')
+          initialConsequenceRef.current = {
+            moisture: data.feedstock_moisture_pct ?? '',
+            start: data.feedstock_start_weight_t ?? '',
+            end: data.feedstock_end_weight_t ?? '',
+          }
           setRuntimeHours(data.runtime_hours ?? '')
           setDowntimeHours(data.downtime_hours ?? '')
           setDowntimeReason(data.downtime_reason ?? '')
@@ -360,6 +374,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           setFeedstockStartWeight('')
           setFeedstockEndWeight('')
           setFeedstockMoisture('')
+          initialConsequenceRef.current = { moisture: '', start: '', end: '' }
           setRuntimeHours('')
           setDowntimeHours('')
           setDowntimeReason('')
@@ -375,6 +390,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           resetWoodVinegar()
         }
         setDirty(false)
+        setCorrectionReason('')
+        setReasonModalOpen(false)
       })
   }, [date, shift, machineId])
 
@@ -538,7 +555,31 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
     ]
   }
 
-  async function handleSave({ silent = false } = {}) {
+  // True when a consequence field (moisture / feedstock start or end) differs
+  // from the snapshot captured at load — the trigger for requiring a reason on
+  // a past-run edit.
+  function consequenceChanged() {
+    const s = initialConsequenceRef.current
+    const norm = (v) => (v === '' || v == null ? null : Number(v))
+    return (
+      norm(feedstockMoisture) !== norm(s.moisture) ||
+      norm(feedstockStartWeight) !== norm(s.start) ||
+      norm(feedstockEndWeight) !== norm(s.end)
+    )
+  }
+
+  // After a save lands, the current values become the new baseline (so the run
+  // reads "clean" again) and the consumed reason is cleared.
+  function clearCorrectionState() {
+    setCorrectionReason('')
+    initialConsequenceRef.current = {
+      moisture: feedstockMoisture,
+      start: feedstockStartWeight,
+      end: feedstockEndWeight,
+    }
+  }
+
+  async function handleSave({ silent = false, reasonOverride } = {}) {
     // Hard validation gate — block the save (and any DB write) before an
     // impossible value can reach the CHECK constraints as a raw Postgres
     // error. Autosave aborts silently and leaves the form dirty so the
@@ -549,6 +590,19 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         const first = validationIssues.find((i) => i.severity === 'hard')
         alert(first.message)
       }
+      return
+    }
+
+    // Correction-mode gate: a PAST run's consequence edit needs an explicit
+    // reasoned save. Silent autosave/blur is suppressed (form stays dirty, like
+    // the hard-validation gate above); a manual save opens the reason modal.
+    // Only persisted rows qualify — a brand-new back-dated run's first save is an
+    // INSERT, which the audit trigger doesn't fire on, so there's nothing to
+    // attribute a reason to. Today's runs skip this entirely.
+    const effectiveReason = reasonOverride ?? correctionReason
+    if (date < todayISO() && isPersisted && consequenceChanged() && !effectiveReason) {
+      if (silent) return
+      setReasonModalOpen(true)
       return
     }
 
@@ -599,6 +653,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         thermal_output_kwh: thermalOutput === '' ? null : Number(thermalOutput),
         notes: notes || null,
         maintenance_notes: maintenanceNotes || null,
+        last_edit_reason: effectiveReason || null,
         updated_at: new Date().toISOString(),
       }
 
@@ -690,6 +745,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         if (!silent) setSavedMessage('Saved locally — will sync')
         setDirty(false)
         setIsPersisted(true)
+        clearCorrectionState()
         onQueueChange?.()
         setSaving(false)
         return
@@ -831,6 +887,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
       setBags([...bags])
       setDirty(false)
       setIsPersisted(true)
+      clearCorrectionState()
       setLastSavedAt(new Date())
       if (!silent) {
         setSavedMessage('Saved')
@@ -925,6 +982,9 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   const warnFields = new Set(
     validationIssues.filter((i) => i.severity === 'warn').map((i) => i.field),
   )
+  // Editing a past run's consequence fields → autosave is paused until the
+  // operator saves with a reason.
+  const needsReason = date < todayISO() && isPersisted && consequenceChanged()
 
   return (
     <div className="pb-28 px-4 pt-4 max-w-2xl mx-auto">
@@ -1364,19 +1424,42 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         </div>
       )}
 
+      {/* Past-run correction notice — autosave is paused; the WHOLE save waits
+          on a reason, so a quiet sheet reads as "needs a reason", not broken. */}
+      {needsReason && (
+        <div className="mt-6 rounded-xl border-2 border-amber-300 bg-amber-50 p-4">
+          <p className="text-base font-bold text-amber-800">Past-run correction — autosave paused</p>
+          <p className="text-sm text-amber-700 mt-1">
+            You're changing feedstock or moisture on a past run. Tap
+            <span className="font-semibold"> Save correction</span> and add a reason —
+            none of your changes (including bags) save until you do.
+          </p>
+        </div>
+      )}
+
       {/* Save */}
       <button
         onClick={handleSave}
         disabled={saving || hardBlocked}
-        className="btn-primary w-full mt-8 disabled:opacity-50"
+        className={`w-full mt-8 disabled:opacity-50 ${needsReason ? 'btn-primary !bg-amber-500 active:!bg-amber-600' : 'btn-primary'}`}
       >
-        {saving ? 'Saving...' : existingId ? 'Update Run Sheet' : 'Save Run Sheet'}
+        {saving ? 'Saving...' : needsReason ? 'Save correction' : existingId ? 'Update Run Sheet' : 'Save Run Sheet'}
       </button>
 
       <SaveConfirmation
         show={!!savedMessage}
         message={savedMessage || 'Saved'}
         onDone={() => setSavedMessage(null)}
+      />
+
+      <ReasonModal
+        open={reasonModalOpen}
+        onCancel={() => setReasonModalOpen(false)}
+        onSubmit={(reason) => {
+          setReasonModalOpen(false)
+          setCorrectionReason(reason)
+          handleSaveRef.current({ reasonOverride: reason })
+        }}
       />
     </div>
   )
