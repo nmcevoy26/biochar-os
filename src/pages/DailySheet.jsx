@@ -922,6 +922,9 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   const hardFields = new Set(
     validationIssues.filter((i) => i.severity === 'hard').map((i) => i.field),
   )
+  const warnFields = new Set(
+    validationIssues.filter((i) => i.severity === 'warn').map((i) => i.field),
+  )
 
   return (
     <div className="pb-28 px-4 pt-4 max-w-2xl mx-auto">
@@ -1017,6 +1020,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           step={0.1}
           min={0}
           error={hardFields.has('feedstock_end_weight_t')}
+          warn={warnFields.has('feedstock_end_weight_t')}
         />
         <NumberInput
           label="Moisture"
@@ -1108,6 +1112,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             unit="C"
             step={5}
             min={0}
+            error={hardFields.has('avg_pyrolysis_temp_c')}
+            warn={warnFields.has('avg_pyrolysis_temp_c')}
           />
           <NumberInput
             label="Max Pyro Temp"
@@ -1116,6 +1122,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             unit="C"
             step={5}
             min={0}
+            error={hardFields.has('max_pyrolysis_temp_c')}
+            warn={warnFields.has('max_pyrolysis_temp_c')}
           />
           <NumberInput
             label="Avg Exhaust Temp"
@@ -1124,6 +1132,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             unit="C"
             step={5}
             min={0}
+            error={hardFields.has('avg_exhaust_temp_c')}
+            warn={warnFields.has('avg_exhaust_temp_c')}
           />
           <NumberInput
             label="Thermal Output"
