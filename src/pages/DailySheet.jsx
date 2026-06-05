@@ -6,6 +6,7 @@ import Toggle from '../components/Toggle'
 import NumberInput from '../components/NumberInput'
 import SaveConfirmation from '../components/SaveConfirmation'
 import WoodVinegarSection from '../components/WoodVinegarSection'
+import { validateDailySheet, validateBags, hasHardIssue } from '../lib/dailySheetValidation'
 
 const NEW_WV_BATCH = '__new__'
 
@@ -516,7 +517,41 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
     return false
   }
 
+  // Hard/warn validation for the current form state. Mirrors the dashboard's
+  // rules (see lib/dailySheetValidation). Computed both at save time (to gate
+  // the write) and in render (to drive field cues + the issue banner).
+  function getValidationIssues() {
+    return [
+      ...validateDailySheet({
+        feedstock_start_weight_t: feedstockStartWeight,
+        feedstock_end_weight_t: feedstockEndWeight,
+        feedstock_moisture_pct: feedstockMoisture,
+        runtime_hours: runtimeHours,
+        downtime_hours: downtimeHours,
+        diesel_litres: dieselLitres,
+        avg_pyrolysis_temp_c: avgPyroTemp,
+        max_pyrolysis_temp_c: maxPyroTemp,
+        avg_exhaust_temp_c: avgExhaustTemp,
+        thermal_output_kwh: thermalOutput,
+      }),
+      ...validateBags(bags),
+    ]
+  }
+
   async function handleSave({ silent = false } = {}) {
+    // Hard validation gate — block the save (and any DB write) before an
+    // impossible value can reach the CHECK constraints as a raw Postgres
+    // error. Autosave aborts silently and leaves the form dirty so the
+    // operator can correct; manual save surfaces the first hard message.
+    const validationIssues = getValidationIssues()
+    if (hasHardIssue(validationIssues)) {
+      if (!silent) {
+        const first = validationIssues.find((i) => i.severity === 'hard')
+        alert(first.message)
+      }
+      return
+    }
+
     const wvErrs = validateWoodVinegar()
     const wvValid = Object.keys(wvErrs).length === 0
     if (!wvValid && !silent) {
@@ -882,6 +917,15 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
       ? Math.max(0, Number(feedstockStartWeight) - Number(feedstockEndWeight)).toFixed(2)
       : '-'
 
+  const validationIssues = getValidationIssues()
+  const hardBlocked = hasHardIssue(validationIssues)
+  const hardFields = new Set(
+    validationIssues.filter((i) => i.severity === 'hard').map((i) => i.field),
+  )
+  const warnFields = new Set(
+    validationIssues.filter((i) => i.severity === 'warn').map((i) => i.field),
+  )
+
   return (
     <div className="pb-28 px-4 pt-4 max-w-2xl mx-auto">
       <div className="flex items-center justify-between mb-4 gap-3">
@@ -966,6 +1010,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           unit="t"
           step={0.1}
           min={0}
+          error={hardFields.has('feedstock_start_weight_t')}
         />
         <NumberInput
           label="End Weight"
@@ -974,6 +1019,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           unit="t"
           step={0.1}
           min={0}
+          error={hardFields.has('feedstock_end_weight_t')}
+          warn={warnFields.has('feedstock_end_weight_t')}
         />
         <NumberInput
           label="Moisture"
@@ -983,6 +1030,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           step={1}
           min={0}
           max={100}
+          error={hardFields.has('feedstock_moisture_pct')}
         />
         <div>
           <label className="field-label">Input (calculated)</label>
@@ -1064,6 +1112,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             unit="C"
             step={5}
             min={0}
+            error={hardFields.has('avg_pyrolysis_temp_c')}
+            warn={warnFields.has('avg_pyrolysis_temp_c')}
           />
           <NumberInput
             label="Max Pyro Temp"
@@ -1072,6 +1122,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             unit="C"
             step={5}
             min={0}
+            error={hardFields.has('max_pyrolysis_temp_c')}
+            warn={warnFields.has('max_pyrolysis_temp_c')}
           />
           <NumberInput
             label="Avg Exhaust Temp"
@@ -1080,6 +1132,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
             unit="C"
             step={5}
             min={0}
+            error={hardFields.has('avg_exhaust_temp_c')}
+            warn={warnFields.has('avg_exhaust_temp_c')}
           />
           <NumberInput
             label="Thermal Output"
@@ -1172,6 +1226,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
                   unit="kg"
                   step={1}
                   min={0}
+                  error={hardFields.has(`bag_${i}_wet`)}
                 />
                 <NumberInput
                   label="Moisture"
@@ -1181,6 +1236,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
                   step={1}
                   min={0}
                   max={100}
+                  error={hardFields.has(`bag_${i}_moisture`)}
                 />
                 <NumberInput
                   label="Volume"
@@ -1189,6 +1245,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
                   unit="m3"
                   step={1}
                   min={0}
+                  error={hardFields.has(`bag_${i}_vol`)}
                 />
                 <div>
                   <label className="field-label">Dry Weight</label>
@@ -1292,10 +1349,25 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         />
       )}
 
+      {/* Validation issues — hard issues (red) block the save; warnings
+          (amber) are informational and don't block, mirroring the dashboard. */}
+      {validationIssues.length > 0 && (
+        <div className="mt-6 space-y-1">
+          {validationIssues.map((issue, idx) => (
+            <p
+              key={idx}
+              className={`text-sm font-medium ${issue.severity === 'hard' ? 'text-red-600' : 'text-amber-600'}`}
+            >
+              {issue.severity === 'hard' ? '⛔ ' : '⚠️ '}{issue.message}
+            </p>
+          ))}
+        </div>
+      )}
+
       {/* Save */}
       <button
         onClick={handleSave}
-        disabled={saving}
+        disabled={saving || hardBlocked}
         className="btn-primary w-full mt-8 disabled:opacity-50"
       >
         {saving ? 'Saving...' : existingId ? 'Update Run Sheet' : 'Save Run Sheet'}
