@@ -1,4 +1,4 @@
-export default function NumberInput({ label, value, onChange, unit, step = 1, min, max, placeholder }) {
+export default function NumberInput({ label, value, onChange, unit, step = 1, min, max, placeholder, error = false }) {
   const numVal = value === '' || value == null ? '' : Number(value)
 
   function adjust(delta) {
@@ -27,7 +27,7 @@ export default function NumberInput({ label, value, onChange, unit, step = 1, mi
             value={value ?? ''}
             onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
             placeholder={placeholder}
-            className="input-field text-center pr-12"
+            className={`input-field text-center pr-12 ${error ? '!border-red-400 !border-2' : ''}`}
             min={min}
             max={max}
             step={step}
