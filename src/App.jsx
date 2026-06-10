@@ -32,8 +32,13 @@ export default function App() {
     }
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) {
+      // Session died mid-shift (revoked, or expired past its refresh token):
+      // drop to the PIN screen so the operator sees the re-PIN-to-sync notice
+      // instead of a silently stuck queue badge.
       setReauthNeeded(true)
       setQueueCount(getQueue().length)
+      await operatorSignOut()
+      setOperator(null)
       return
     }
     await flushQueue(supabase)
