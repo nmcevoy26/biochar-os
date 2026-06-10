@@ -120,6 +120,11 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   // sheet was opened and a field was touched. Set true when load finds an
   // existing row, or after the first successful save/enqueue this session.
   const [isPersisted, setIsPersisted] = useState(false)
+  // Owner of this daily_production row. Loaded rows keep their stored
+  // operator_id — a correction by a different operator must not reassign
+  // the run (audit_log already records who made the correction). Only a
+  // row created this session is stamped with the logged-in operator.
+  const rowOperatorIdRef = useRef(null)
   const [dirty, setDirty] = useState(false)
   // dirtyTick bumps on every edit so the autosave effect's debounce timer
   // resets per keystroke. Using `dirty` as the dep doesn't work — once it's
@@ -161,6 +166,8 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
   // is found, and after every successful save/enqueue of the fill. Cleared
   // by resetWoodVinegar and removeWvFill.
   const [wvFillPersisted, setWvFillPersisted] = useState(false)
+  // Owner of the loaded WV fill (same preserve-on-edit rule as the run row).
+  const wvFillOperatorIdRef = useRef(null)
   const [wvErrors, setWvErrors] = useState({})
 
   const machineId = MACHINES[machineKey]
@@ -175,6 +182,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
     setWvCloseBatch(false)
     setWvExistingFillId(null)
     setWvFillPersisted(false)
+    wvFillOperatorIdRef.current = null
     setWvErrors({})
   }
 
@@ -301,6 +309,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         if (data) {
           setExistingId(data.id)
           setIsPersisted(true)
+          rowOperatorIdRef.current = data.operator_id ?? null
           setOperatorName(data.operator || loggedInOperator?.name || '')
           setFeedstockStartWeight(data.feedstock_start_weight_t ?? '')
           setFeedstockEndWeight(data.feedstock_end_weight_t ?? '')
@@ -341,7 +350,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           if (machineKey === 'CP500') {
             supabase
               .from('wood_vinegar_fills')
-              .select('id, batch_id, volume_liters, notes')
+              .select('id, batch_id, volume_liters, notes, operator_id')
               .eq('production_id', data.id)
               .order('created_at', { ascending: true })
               .limit(1)
@@ -354,6 +363,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
                   setWvNotes(f.notes || '')
                   setWvExistingFillId(f.id)
                   setWvFillPersisted(true)
+                  wvFillOperatorIdRef.current = f.operator_id ?? null
                 } else {
                   resetWoodVinegar()
                 }
@@ -370,6 +380,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           // fires — that's the phantom-row gate in handleSave.
           setExistingId(crypto.randomUUID())
           setIsPersisted(false)
+          rowOperatorIdRef.current = loggedInOperator?.id || null
           setOperatorName(loggedInOperator?.name || '')
           setFeedstockStartWeight('')
           setFeedstockEndWeight('')
@@ -639,7 +650,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
         shift,
         machine_id: machineId,
         operator: operatorName || null,
-        operator_id: loggedInOperator?.id || null,
+        operator_id: rowOperatorIdRef.current,
         feedstock_start_weight_t: feedstockStartWeight === '' ? null : Number(feedstockStartWeight),
         feedstock_end_weight_t: feedstockEndWeight === '' ? null : Number(feedstockEndWeight),
         feedstock_moisture_pct: feedstockMoisture === '' ? null : Number(feedstockMoisture),
@@ -680,7 +691,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
               shift,
               machine_id: machineId,
               production_id: existingId,
-              operator_id: loggedInOperator?.id || null,
+              operator_id: bag.operator_id ?? (loggedInOperator?.id || null),
               wet_weight_kg: bag.wet_weight_kg === '' ? null : Number(bag.wet_weight_kg),
               moisture_pct: bag.moisture_pct === '' ? null : Number(bag.moisture_pct),
               volume_m3: bag.volume_m3 === '' ? null : Number(bag.volume_m3),
@@ -720,7 +731,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
               id: wvExistingFillId,
               batch_id: fillBatchId,
               production_id: existingId,
-              operator_id: loggedInOperator?.id || null,
+              operator_id: wvFillOperatorIdRef.current ?? (loggedInOperator?.id || null),
               fill_date: date,
               volume_liters: Number(wvVolume),
               notes: wvNotes || null,
@@ -782,7 +793,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           shift,
           machine_id: machineId,
           production_id: productionId,
-          operator_id: loggedInOperator?.id || null,
+          operator_id: bag.operator_id ?? (loggedInOperator?.id || null),
           wet_weight_kg: bag.wet_weight_kg === '' ? null : Number(bag.wet_weight_kg),
           moisture_pct: bag.moisture_pct === '' ? null : Number(bag.moisture_pct),
           volume_m3: bag.volume_m3 === '' ? null : Number(bag.volume_m3),
@@ -831,7 +842,7 @@ export default function DailySheet({ online, operator: loggedInOperator, queueCo
           id: wvExistingFillId,
           batch_id: batchUuid,
           production_id: productionId,
-          operator_id: loggedInOperator?.id || null,
+          operator_id: wvFillOperatorIdRef.current ?? (loggedInOperator?.id || null),
           fill_date: date,
           volume_liters: Number(wvVolume),
           notes: wvNotes || null,
