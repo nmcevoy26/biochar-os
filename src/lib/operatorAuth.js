@@ -50,18 +50,25 @@ export async function pinLogin(operatorId, pin) {
 
   const { data: { session } } = await supabase.auth.getSession()
   const sessionOperatorId = session?.user?.app_metadata?.operator_id ?? null
-  if (sessionOperatorId !== operatorId) {
-    if (session) {
-      try {
-        await supabase.auth.signOut()
-      } catch {
-        // Server-side revoke can fail offline; the local session is still
-        // cleared and verifyOtp below replaces it.
-      }
-    }
-    const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: 'email' })
-    if (error) return { status: PIN_ERROR }
+  if (sessionOperatorId === operatorId) {
+    // Same operator — reuse, but only if the server still honours the
+    // session. getSession() is a local clock check: a session revoked
+    // server-side (deactivation, forced sign-out) can still look valid here
+    // until the access token lapses. getUser() round-trips to GoTrue, which
+    // validates the session itself; a zombie falls through to a fresh mint.
+    const { error: liveErr } = await supabase.auth.getUser()
+    if (!liveErr) return { status: PIN_OK }
   }
+  if (session) {
+    try {
+      await supabase.auth.signOut()
+    } catch {
+      // Server-side revoke can fail (offline / already revoked); the local
+      // session is still cleared and verifyOtp below replaces it.
+    }
+  }
+  const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type: 'email' })
+  if (error) return { status: PIN_ERROR }
   return { status: PIN_OK }
 }
 
