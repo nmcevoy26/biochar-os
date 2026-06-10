@@ -9,16 +9,27 @@ if (!supabaseUrl || !supabaseAnonKey) {
   )
 }
 
-// biochar-os authenticates operators via PIN (sessionStorage), never Supabase
-// Auth — the client must stay pure-anon. persistSession / autoRefreshToken off
-// stops supabase-js from loading or sending any stored session from localStorage
-// (which can be shared with the dashboard under the same Supabase project ref).
-// This keeps auth.uid() null on every request, which the audit trigger's
-// anon-edit seam depends on — otherwise a stray dashboard session would make
-// auth.uid() non-null and silently skip auditing an operator's historical edits.
+// Operators hold real Supabase sessions (Tier 0 Step 4): PIN login exchanges
+// the PIN for a session via the pin-login edge function, so auth.uid() is the
+// operator's floor identity on every request — the audit trigger's
+// is_operator() seam (and, from Step 5, RLS policies) key on it. The persisted
+// session provides in-shift continuity and offline-queue drains; the app still
+// requires a PIN at every launch, and PinLogin/App reconcile the entered
+// operator against the session's app_metadata.operator_id (mismatch = signOut
+// + fresh mint — another operator's session is never reused). The explicit
+// storageKey keeps this session out of the default sb-<ref>-auth-token slot so
+// it can never collide with the dashboard's when both apps share an origin
+// (localhost dev).
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: { persistSession: false, autoRefreshToken: false },
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true,
+    storageKey: 'grip-auth-token',
+    detectSessionInUrl: false,
+  },
 })
+
+export { supabaseUrl, supabaseAnonKey }
 
 export const MACHINES = {
   CP500: 'c79db7c9-bc54-43a9-993b-41b9121bbd68',
