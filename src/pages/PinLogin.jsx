@@ -1,13 +1,26 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
+import {
+  pinLogin,
+  PIN_OK,
+  PIN_LOCKED,
+  PIN_NOT_PROVISIONED,
+  PIN_ERROR,
+} from '../lib/operatorAuth'
 import PinKeypad from '../components/PinKeypad'
 
-export default function PinLogin({ onLogin }) {
+const ERROR_MESSAGES = {
+  invalid: 'Invalid PIN',
+  network: 'Connection problem — try again',
+  not_provisioned: 'No floor login yet — ask an admin to provision one',
+}
+
+export default function PinLogin({ onLogin, notice }) {
   const [operators, setOperators] = useState(null)
   const [loadError, setLoadError] = useState(false)
   const [selected, setSelected] = useState(null)
   const [pin, setPin] = useState('')
-  const [error, setError] = useState(false)
+  const [error, setError] = useState(null)
   const [checking, setChecking] = useState(false)
 
   const loadOperators = useCallback(async () => {
@@ -27,25 +40,31 @@ export default function PinLogin({ onLogin }) {
   function pickOperator(op) {
     setSelected(op)
     setPin('')
-    setError(false)
+    setError(null)
   }
 
   function backToPicker() {
     setSelected(null)
     setPin('')
-    setError(false)
+    setError(null)
   }
 
   const verifyPin = useCallback(async (code) => {
     setChecking(true)
-    const { data, error: err } = await supabase.rpc('verify_operator_pin', {
-      p_operator_id: selected.id,
-      p_pin: code,
-    })
+    const result = await pinLogin(selected.id, code)
     setChecking(false)
-    if (err || data !== true) {
-      setError(true)
+    if (result.status !== PIN_OK) {
       setPin('')
+      if (result.status === PIN_LOCKED) {
+        const minutes = Math.max(1, Math.ceil((result.retryAfterSeconds ?? 900) / 60))
+        setError(`Too many attempts — locked for ${minutes} min`)
+      } else if (result.status === PIN_NOT_PROVISIONED) {
+        setError(ERROR_MESSAGES.not_provisioned)
+      } else if (result.status === PIN_ERROR) {
+        setError(ERROR_MESSAGES.network)
+      } else {
+        setError(ERROR_MESSAGES.invalid)
+      }
       if (navigator.vibrate) navigator.vibrate([50, 30, 50])
       return
     }
@@ -55,7 +74,7 @@ export default function PinLogin({ onLogin }) {
   }, [selected, onLogin])
 
   const handleKey = useCallback((digit) => {
-    setError(false)
+    setError(null)
     setPin((prev) => {
       if (prev.length >= 4) return prev
       const next = prev + digit
@@ -65,13 +84,18 @@ export default function PinLogin({ onLogin }) {
   }, [verifyPin])
 
   const handleBackspace = useCallback(() => {
-    setError(false)
+    setError(null)
     setPin((prev) => prev.slice(0, -1))
   }, [])
 
   if (!selected) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center px-6">
+        {notice && (
+          <p className="mb-6 max-w-xs rounded-xl bg-orange-100 px-4 py-3 text-center text-sm font-semibold text-orange-700">
+            {notice}
+          </p>
+        )}
         <div className="text-center mb-8">
           <h1 className="text-2xl font-bold text-primary mb-1">TimberLoop</h1>
           <p className="text-gray-500 text-sm">Select your name</p>
@@ -139,7 +163,7 @@ export default function PinLogin({ onLogin }) {
       <div className="h-6 mb-6">
         {error && (
           <p className="text-red-500 text-sm font-semibold animate-[shake_0.4s_ease-in-out]">
-            Invalid PIN
+            {error}
           </p>
         )}
       </div>

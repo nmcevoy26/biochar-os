@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import TabBar from './components/TabBar'
 import Today from './pages/Today'
 import DailySheet from './pages/DailySheet'
@@ -8,21 +8,43 @@ import UpdateBanner from './components/UpdateBanner'
 import PullToRefresh from './components/PullToRefresh'
 import { supabase } from './lib/supabase'
 import { flushQueue, getQueue } from './lib/offline'
+import { operatorSignOut, sessionMatchesOperator } from './lib/operatorAuth'
 
 export default function App() {
   const [tab, setTab] = useState('daily')
   const [online, setOnline] = useState(navigator.onLine)
   const [queueCount, setQueueCount] = useState(0)
+  const [reauthNeeded, setReauthNeeded] = useState(false)
   const [operator, setOperator] = useState(() => {
     const id = sessionStorage.getItem('grip_operator_id')
     const name = sessionStorage.getItem('grip_operator_name')
     return id && name ? { id, name } : null
   })
 
+  // Drain guard: never replay the queue without a live session. getSession()
+  // awaits the token refresh when the access token has expired (a >1hr-offline
+  // reconnect), so the drain can't race a stale JWT. An unrefreshable session
+  // (revoked / expired refresh token) keeps the queue and asks for a re-PIN.
+  const drain = useCallback(async () => {
+    if (getQueue().length === 0) {
+      setQueueCount(0)
+      return
+    }
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      setReauthNeeded(true)
+      setQueueCount(getQueue().length)
+      return
+    }
+    await flushQueue(supabase)
+    setReauthNeeded(false)
+    setQueueCount(getQueue().length)
+  }, [])
+
   useEffect(() => {
     function handleOnline() {
       setOnline(true)
-      flushQueue(supabase).then(() => setQueueCount(getQueue().length))
+      drain()
     }
     function handleOffline() {
       setOnline(false)
@@ -32,7 +54,7 @@ export default function App() {
     window.addEventListener('offline', handleOffline)
 
     if (navigator.onLine) {
-      flushQueue(supabase).then(() => setQueueCount(getQueue().length))
+      drain()
     }
 
     const interval = setInterval(() => setQueueCount(getQueue().length), 5000)
@@ -42,11 +64,32 @@ export default function App() {
       window.removeEventListener('offline', handleOffline)
       clearInterval(interval)
     }
-  }, [])
+  }, [drain])
 
-  function handleLogout() {
-    sessionStorage.removeItem('grip_operator_id')
-    sessionStorage.removeItem('grip_operator_name')
+  // Launch reconciliation: a sessionStorage identity is only trusted when the
+  // persisted session belongs to the same operator (app_metadata.operator_id).
+  // Mismatch or missing session -> sign out locally and drop to the PIN screen.
+  useEffect(() => {
+    if (!operator) return
+    let cancelled = false
+    sessionMatchesOperator(operator.id).then((matches) => {
+      if (cancelled || matches) return
+      operatorSignOut().then(() => {
+        if (!cancelled) setOperator(null)
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [operator])
+
+  // A fresh login can drain whatever the previous session left queued.
+  useEffect(() => {
+    if (operator && navigator.onLine) drain()
+  }, [operator, drain])
+
+  async function handleLogout() {
+    await operatorSignOut()
     setOperator(null)
   }
 
@@ -54,7 +97,14 @@ export default function App() {
     <PullToRefresh>
       <UpdateBanner />
       {!operator ? (
-        <PinLogin onLogin={setOperator} />
+        <PinLogin
+          onLogin={setOperator}
+          notice={
+            reauthNeeded && queueCount > 0
+              ? 'Session expired — enter your PIN to sync queued changes'
+              : null
+          }
+        />
       ) : (
         <div className="min-h-screen bg-gray-50">
           {/* Offline banner */}
