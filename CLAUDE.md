@@ -114,7 +114,7 @@ src/
 - **Custom colors:** `primary` (#1e3a5f), `primary-light` (#2d5a8e) defined in tailwind.config.js
 - **iPad-first design:** large touch targets (py-3.5, text-lg), safe-area padding for notch/status bar
 - **Offline-first:** all writes go through offline queue; flushed on reconnect
-- **Auth:** PIN login exchanges the PIN for a real Supabase session via the `pin-login` edge function (throttled: 5 fails → 15 min lockout). The session (localStorage key `grip-auth-token`) is the identity — `app_metadata.operator_id` — and persists for in-shift continuity + offline drains; a PIN is required at every launch, and `sessionStorage` (`grip_operator_id`, `grip_operator_name`) is only the display cache, reconciled against the session at boot (mismatch → signOut + PIN screen).
+- **Auth:** PIN-based login stored in sessionStorage (`grip_operator_id`, `grip_operator_name`)
 - **Operator floor identity (Tier 0 doctrine):** `operators.auth_user_id` links each operator to a synthetic auth user (`operator-<name>@timberloop.test`, `app_metadata.role='operator'` + `operator_id`, no `user_roles` row). PIN login will mint real sessions from it (Step 4) and the audit seam's `is_operator()` keys on it. It is **service-role-owned** — provisioned only via the `operator-admin` edge function (`supabase/functions/operator-admin/`) or service-role scripts; a DB trigger (`guard_operator_floor_identity`) blocks dashboard sessions from changing it. Never point it at a staff/dashboard auth user.
 - **Two machines:** CP500 and CP1000 (UUIDs in `src/lib/supabase.js`)
 - **Supabase credentials** are hardcoded (anon key only) — no .env required for dev
