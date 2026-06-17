@@ -39,3 +39,29 @@ create policy "Operator app read"   on public.weekly_sample_production for selec
 create policy "Operator app insert" on public.weekly_sample_production for insert with check (true);
 create policy "Operator app update" on public.weekly_sample_production for update using (true) with check (true);
 create policy "Operator app delete" on public.weekly_sample_production for delete using (true);
+
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ Tier 0 Step 5 (🟡 batch) — Path-A rollback                                ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+-- Drops the 🟡 area-access policies and restores the permissive "Operator app"
+-- quartet on each table. Self-contained per table.
+
+-- ── feedstock_sources ──────────────────────────────────────────────────────
+drop policy if exists "Feedstock sources viewable per area access" on public.feedstock_sources;
+drop policy if exists "Feedstock sources writable per area edit" on public.feedstock_sources;
+drop policy if exists "Feedstock sources updatable per area edit" on public.feedstock_sources;
+drop policy if exists "Feedstock sources deletable per area edit" on public.feedstock_sources;
+create policy "Operator app read"   on public.feedstock_sources for select using (true);
+create policy "Operator app insert" on public.feedstock_sources for insert with check (true);
+create policy "Operator app update" on public.feedstock_sources for update using (true) with check (true);
+create policy "Operator app delete" on public.feedstock_sources for delete using (true);
+
+-- ── machines ───────────────────────────────────────────────────────────────
+drop policy if exists "Machines viewable per area access" on public.machines;
+drop policy if exists "Machines writable per area edit" on public.machines;
+drop policy if exists "Machines updatable per area edit" on public.machines;
+drop policy if exists "Machines deletable per area edit" on public.machines;
+create policy "Operator app read"   on public.machines for select using (true);
+create policy "Operator app insert" on public.machines for insert with check (true);
+create policy "Operator app update" on public.machines for update using (true) with check (true);
+create policy "Operator app delete" on public.machines for delete using (true);
