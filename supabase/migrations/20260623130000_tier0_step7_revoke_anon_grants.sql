@@ -1,0 +1,22 @@
+-- Tier 0 Step 7 (FINAL LOCK): revoke all anon table/view grants in public.
+-- The belt to Step 5 (policies)/Step 6 (views) braces — after this, anon has
+-- NEITHER a matching policy NOR a grant anywhere, on any operator/dashboard
+-- table or view.
+--
+-- Safe because NEITHER app reads any table as anon (verified Step 7 Sub-phase A):
+--   * biochar-os pre-auth: list_operators_for_login() RPC only (SECURITY DEFINER,
+--     owner postgres, anon EXECUTE) for the login-screen operator list; PIN
+--     exchange goes through the pin-login edge function (service role) +
+--     GoTrue verifyOtp. Every .from(table) runs post-login as the authed operator.
+--   * dashboard pre-auth: signInWithPassword / resetPasswordForEmail (GoTrue);
+--     the user_roles read fires only when a session exists (post-auth, auth.uid()).
+-- The only anon-reachable surfaces are the two SECURITY DEFINER login RPCs, whose
+-- EXECUTE grants are FUNCTION privileges — NOT touched by a table revoke.
+--
+-- Verified no extension-owned objects in public carry anon grants (all are
+-- postgres/supabase_admin owned), so this catches only the intended dead grants.
+--
+-- ROLLBACK: scripts/rollback_step7_anon_grants.sql (exact GRANT mirror captured
+-- from live staging+prod 2026-06-23 — identical on both envs).
+
+revoke all on all tables in schema public from anon;
