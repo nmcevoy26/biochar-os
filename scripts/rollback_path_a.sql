@@ -65,3 +65,78 @@ create policy "Operator app read"   on public.machines for select using (true);
 create policy "Operator app insert" on public.machines for insert with check (true);
 create policy "Operator app update" on public.machines for update using (true) with check (true);
 create policy "Operator app delete" on public.machines for delete using (true);
+
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ Tier 0 Step 5 (🟠 batch) — Path-A rollback                                ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+-- Restores the permissive "Operator app" set on the write-path tables. Self-
+-- contained per table. NOTE wood_vinegar_batches: its DELETE was already
+-- area-gated BEFORE Step 5 ("Wood vinegar batches deletable per area edit")
+-- and is left untouched in both directions (mirrors sales_dispatch in 🟢).
+
+-- ── weekly_samples ───────────────────────────────────────────────────────────
+drop policy if exists "Weekly samples viewable per area access" on public.weekly_samples;
+drop policy if exists "Weekly samples writable per area edit" on public.weekly_samples;
+drop policy if exists "Weekly samples updatable per area edit" on public.weekly_samples;
+drop policy if exists "Weekly samples deletable per area edit" on public.weekly_samples;
+create policy "Operator app read"   on public.weekly_samples for select using (true);
+create policy "Operator app insert" on public.weekly_samples for insert with check (true);
+create policy "Operator app update" on public.weekly_samples for update using (true) with check (true);
+create policy "Operator app delete" on public.weekly_samples for delete using (true);
+
+-- ── wood_vinegar_batches (S/I/U only; pre-existing area DELETE untouched) ─────
+drop policy if exists "Wood vinegar batches viewable per area access" on public.wood_vinegar_batches;
+drop policy if exists "Wood vinegar batches writable per area edit" on public.wood_vinegar_batches;
+drop policy if exists "Wood vinegar batches updatable per area edit" on public.wood_vinegar_batches;
+create policy "Operator app read"   on public.wood_vinegar_batches for select using (true);
+create policy "Operator app insert" on public.wood_vinegar_batches for insert with check (true);
+create policy "Operator app update" on public.wood_vinegar_batches for update using (true) with check (true);
+
+-- ╔══════════════════════════════════════════════════════════════════════════╗
+-- ║ Tier 0 Step 5 (🔴 batch) — Path-A rollback                                ║
+-- ╚══════════════════════════════════════════════════════════════════════════╝
+-- Restores the permissive "Operator app" set on the production-critical tables.
+-- Self-contained per table. daily_production is LAST.
+
+-- ── wood_vinegar_fills (restores 4 permissive + the area-only DELETE = the
+--    original two-DELETE-policy state) ─────────────────────────────────────────
+drop policy if exists "Wood vinegar fills viewable per area access" on public.wood_vinegar_fills;
+drop policy if exists "Wood vinegar fills writable per area edit" on public.wood_vinegar_fills;
+drop policy if exists "Wood vinegar fills updatable per area edit" on public.wood_vinegar_fills;
+drop policy if exists "Wood vinegar fills deletable per area edit" on public.wood_vinegar_fills;
+create policy "Operator app read"   on public.wood_vinegar_fills for select using (true);
+create policy "Operator app insert" on public.wood_vinegar_fills for insert with check (true);
+create policy "Operator app update" on public.wood_vinegar_fills for update using (true) with check (true);
+create policy "Operator app delete" on public.wood_vinegar_fills for delete using (true);
+create policy "Wood vinegar fills deletable per area edit" on public.wood_vinegar_fills for delete using (has_area_access('wood_vinegar', 'edit'));
+
+-- ── daily_production_feedstock ───────────────────────────────────────────────
+drop policy if exists "Feedstock links viewable per area access" on public.daily_production_feedstock;
+drop policy if exists "Feedstock links writable per area edit" on public.daily_production_feedstock;
+drop policy if exists "Feedstock links updatable per area edit" on public.daily_production_feedstock;
+drop policy if exists "Feedstock links deletable per area edit" on public.daily_production_feedstock;
+create policy "Operator app read"   on public.daily_production_feedstock for select using (true);
+create policy "Operator app insert" on public.daily_production_feedstock for insert with check (true);
+create policy "Operator app update" on public.daily_production_feedstock for update using (true) with check (true);
+create policy "Operator app delete" on public.daily_production_feedstock for delete using (true);
+
+-- ── bulk_bags ────────────────────────────────────────────────────────────────
+drop policy if exists "Bulk bags viewable per area access" on public.bulk_bags;
+drop policy if exists "Bulk bags writable per area edit" on public.bulk_bags;
+drop policy if exists "Bulk bags updatable per area edit" on public.bulk_bags;
+drop policy if exists "Bulk bags deletable per area edit" on public.bulk_bags;
+create policy "Operator app read"   on public.bulk_bags for select using (true);
+create policy "Operator app insert" on public.bulk_bags for insert with check (true);
+create policy "Operator app update" on public.bulk_bags for update using (true) with check (true);
+create policy "Operator app delete" on public.bulk_bags for delete using (true);
+
+-- ── daily_production (LAST; restores permissive quartet. Audit trigger is
+--    independent and untouched by Step 5) ──────────────────────────────────────
+drop policy if exists "Daily production viewable per area access" on public.daily_production;
+drop policy if exists "Daily production writable per area edit" on public.daily_production;
+drop policy if exists "Daily production updatable per area edit" on public.daily_production;
+drop policy if exists "Daily production deletable per area edit" on public.daily_production;
+create policy "Operator app read"   on public.daily_production for select using (true);
+create policy "Operator app insert" on public.daily_production for insert with check (true);
+create policy "Operator app update" on public.daily_production for update using (true) with check (true);
+create policy "Operator app delete" on public.daily_production for delete using (true);
